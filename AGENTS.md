@@ -17,7 +17,7 @@ Reads BGRA from captured, GPU-encodes via ffmpeg, publishes over WebTransport/QU
 
 | Port | Transport | Purpose |
 |------|-----------|---------|
-| 52020 | UDP | WebTransport (QUIC/HTTP-3 control + video) |
+| 52020 | UDP | WebTransport — `/wt` for JSON control, `/moq` for MoQ media (same QUIC conn) |
 | 52022 | TCP | Web UI (plain HTTP, fingerprint display) |
 
 ### Protocol
@@ -39,6 +39,13 @@ JSON control messages (bidirectional stream):
 
 Video: 64KB chunks of H.264/H.265/AV1 Annex B byte stream over the unidirectional stream.
 
+**Media over QUIC (MoQ)**: `https://<server>:52020/moq` — separate WebTransport session using `@moq/lite`.
+- gomoqt `WebTransportHandler` with `UpgradeFunc` wrapping via `okdaichi/webtransport-go`
+- `PublishFunc("/video", ...)` registers each subscriber's `TrackWriter`
+- Each ffmpeg chunk → one MoQ group → one frame
+- Old uni-stream model kept for backwards compat; MoQ runs alongside it.
+- gomoqt v0.15.0, falls back to IETF/moql mode (no ALPN h3/moq).
+
 ### Cert system
 
 - Self-signed ECDSA P-256 certificate, 13-day validity
@@ -58,6 +65,18 @@ const transport = new WebTransport(`https://${ip}:52020/wt`, {
 });
 await transport.ready;
 const stream = await transport.createBidirectionalStream();
+```
+
+MoQ video connection:
+```js
+const moqTransport = new WebTransport(`https://${ip}:52020/moq`, {
+  serverCertificateHashes: [{
+    algorithm: "sha-256",
+    value: new Uint8Array(fingerprintBytes)
+  }]
+});
+await moqTransport.ready;
+// Use @moq/lite to subscribe to "/video"
 ```
 
 ### Web UI
@@ -85,7 +104,8 @@ captured (Unix sockets)
                          ├─ ffmpeg (GPU encode via VideoToolbox/NVENC/AMF/QSV/VAAPI/libx264)
                          │    └─ H.264/H.265/AV1 Annex B byte stream → stdout
                          └─ publishStream goroutine
-                              └─ writes 64KB chunks to each subscriber's unidirectional stream
+                              ├─ writes 64KB chunks to each subscriber's unidirectional stream
+                              └─ writes each chunk as a MoQ frame/group to each MoQ TrackWriter
 ```
 
 ### Start sequence
@@ -118,10 +138,19 @@ captured (Unix sockets)
 4. Client caches additional fingerprint
 5. On next connection, includes both old and new hashes in `serverCertificateHashes`
 
+## MoQ integration
+
+- `/moq` on same UDP port as `/wt` — separate WebTransport session using gomoqt.
+- Each MoQ subscriber gets a `*moqt.TrackWriter` via `PublishFunc("/video", ...)`.
+- `publishStream` writes each ffmpeg chunk to all `TrackWriter`s (one MoQ group + one frame per chunk).
+- On teardown, `moqBroadcastCancel()` unregisters the publish handler.
+- Server TLS `NextProtos` stays `["h3"]` — client MoQ WebTransport negotiates `h3`, `@moq/net` falls back to IETF/moql mode.
+
 ## Dependencies
 
-- `github.com/quic-go/webtransport-go` — WebTransport over QUIC/HTTP-3
+- `github.com/okdaichi/webtransport-go` — WebTransport over QUIC/HTTP-3 (fork used by gomoqt)
 - `github.com/quic-go/quic-go` — QUIC transport layer
+- `github.com/qumo-dev/gomoqt` — Media over QUIC (MoQ) transport
 
 ## Build
 

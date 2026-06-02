@@ -72,6 +72,14 @@ func newCertManager(dir string) (*certManager, error) {
 		cm.entries = append(cm.entries, entry)
 	}
 
+	log.Printf("loaded %d cert(s), active fingerprint: %s", len(cm.entries), cm.FingerprintHex())
+	for i, e := range cm.entries {
+		cert, _ := x509.ParseCertificate(e.Cert.Certificate[0])
+		if cert != nil {
+			log.Printf("  cert[%d]: DNS=%v IPs=%v expires=%s", i, cert.DNSNames, cert.IPAddresses, cert.NotAfter.Format(time.RFC3339))
+		}
+	}
+
 	return cm, nil
 }
 
