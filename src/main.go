@@ -4,7 +4,6 @@ import (
 	"context"
 	_ "embed"
 	"crypto/tls"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -72,19 +71,6 @@ func main() {
 	}
 
 	wtMux := http.NewServeMux()
-	wtMux.HandleFunc("/wt", func(w http.ResponseWriter, r *http.Request) {
-		remote := r.RemoteAddr
-		log.Printf("WT upgrade request from %s", remote)
-		s, err := wtUpgrader.Upgrade(w, r)
-		if err != nil {
-			log.Printf("WT upgrade failed from %s: %v", remote, err)
-			w.WriteHeader(400)
-			return
-		}
-		log.Printf("WT upgrade succeeded from %s", remote)
-		go handleSession(s, cm)
-	})
-
 	moqMux := moqt.NewTrackMux(0)
 	var moqBroadcastCtx context.Context
 	moqBroadcastCtx, moqBroadcastCancel = context.WithCancel(context.Background())
@@ -106,14 +92,52 @@ func main() {
 		}),
 	})
 
+	wtMux.HandleFunc("/wt", func(w http.ResponseWriter, r *http.Request) {
+		remote := r.RemoteAddr
+		log.Printf("WT upgrade request from %s", remote)
+		s, err := wtUpgrader.Upgrade(w, r)
+		if err != nil {
+			log.Printf("WT upgrade failed from %s: %v", remote, err)
+			w.WriteHeader(400)
+			return
+		}
+		log.Printf("WT upgrade succeeded from %s", remote)
+		go handleSession(s, cm)
+	})
 	moqMux.PublishFunc(moqBroadcastCtx, "/video", func(tw *moqt.TrackWriter) {
 		name := tw.TrackName
-		log.Printf("moq subscriber for /video name=%s", name)
+		log.Printf("moq subscribe broadcast=/video track=%s", name)
+
+		if name == "catalog.json" {
+			stateMu.Lock()
+			w, h := 0, 0
+			if state != nil {
+				w, h = state.width, state.height
+			}
+			stateMu.Unlock()
+			catalog := fmt.Sprintf(`{"version":1,"video":{"renditions":{"video":{"codec":"h264","bitrate":0,"width":%d,"height":%d,"name":"video"}}}}`, w, h)
+			g, err := tw.OpenGroup()
+			if err != nil {
+				log.Printf("moq catalog: open group: %v", err)
+				return
+			}
+			f := moqt.NewFrame(len(catalog))
+			f.Write([]byte(catalog))
+			if err := g.WriteFrame(f); err != nil {
+				log.Printf("moq catalog: write frame: %v", err)
+				g.CancelWrite(0)
+				return
+			}
+			g.Close()
+			log.Printf("moq catalog served")
+			return
+		}
+
 		stateMu.Lock()
 		if state != nil {
 			state.moqTrackMu.Lock()
 			state.moqTracks[tw] = struct{}{}
-			log.Printf("moq subscriber added, now %d", len(state.moqTracks))
+			log.Printf("moq video subscriber added, now %d", len(state.moqTracks))
 			state.moqTrackMu.Unlock()
 		}
 		stateMu.Unlock()
@@ -166,49 +190,3 @@ func main() {
 	wtServer.Close()
 }
 
-// -- Web UI --
-
-func startWebUI(addr string, cm *certManager) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(webHTML))
-	})
-	mux.HandleFunc("/api/info", func(w http.ResponseWriter, r *http.Request) {
-		ips := localIPs()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"fingerprint": cm.FingerprintHex(),
-			"ips":         ips,
-		})
-	})
-	log.Printf("Web UI on http://%s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Printf("web ui: %v", err)
-	}
-}
-
-func localIPs() []string {
-	var ips []string
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return ips
-	}
-	for _, iface := range ifaces {
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			if ipnet, ok := a.(*net.IPNet); ok {
-				if ipnet.IP.IsLoopback() || ipnet.IP.IsLinkLocalUnicast() {
-					continue
-				}
-				if ip4 := ipnet.IP.To4(); ip4 != nil {
-					ips = append(ips, ip4.String())
-				}
-			}
-		}
-	}
-	return ips
-}

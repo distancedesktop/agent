@@ -260,19 +260,25 @@ func publishStream(ctx context.Context, r io.ReadCloser) {
 			}
 			g, err := tw.OpenGroup()
 			if err != nil {
+				log.Printf("moq write: open group error: %v, removing track", err)
 				delete(ss.moqTracks, tw)
 				continue
 			}
 			f := moqt.NewFrame(n)
 			f.Write(buf[:n])
 			if err := g.WriteFrame(f); err != nil {
+				log.Printf("moq write: write frame error: %v, removing track", err)
 				g.CancelWrite(0)
 				delete(ss.moqTracks, tw)
 				continue
 			}
 			g.Close()
 		}
+		moqCount := len(ss.moqTracks)
 		ss.moqTrackMu.Unlock()
+		if moqCount > 0 {
+			log.Printf("moq wrote %d bytes to %d track(s)", n, moqCount)
+		}
 	}
 }
 
