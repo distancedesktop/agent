@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	_ "embed"
 	"crypto/tls"
+	_ "embed"
 	"flag"
 	"fmt"
 	"log"
@@ -11,16 +11,91 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"time"
 
+	"github.com/okdaichi/webtransport-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
-	"github.com/okdaichi/webtransport-go"
-	"github.com/qumo-dev/gomoqt/moqt"
-	"github.com/qumo-dev/gomoqt/transport"
+
+	"distancedesktop/agent/src/backend"
 )
 
 //go:embed web/index.html
 var webHTML string
+
+// backendOpts holds parsed --<backend> flag values.
+type backendOpts struct {
+	captured string
+	sunshine string
+	vnc      string
+	rdp      string
+}
+
+// parseKV parses "k=v,k2=v2" style option strings.
+func parseKV(s string) map[string]string {
+	out := map[string]string{}
+	if s == "" {
+		return out
+	}
+	for _, part := range strings.Split(s, ",") {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) == 2 {
+			out[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
+		}
+	}
+	return out
+}
+
+// configureBackends builds the concrete backends from flags.
+func configureBackends(o backendOpts) {
+	reg := func(name, opts string, apply func(map[string]string)) {
+		if opts == "" {
+			return
+		}
+		b, err := backend.Get(name)
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		switch t := b.(type) {
+		case *backend.SunshineBackend:
+			t.Addr = parseKV(opts)["addr"]
+		case *backend.VNCBackend:
+			t.Addr = parseKV(opts)["addr"]
+		case *backend.RDPBackend:
+			t.Addr = parseKV(opts)["addr"]
+		default:
+			apply(parseKV(opts))
+		}
+	}
+	applyCaptured := func(kv map[string]string) {} // source=/device= handled inside captured pipeline
+	reg("sunshine", o.sunshine, applyCaptured)
+	reg("vnc", o.vnc, applyCaptured)
+	reg("rdp", o.rdp, applyCaptured)
+	_ = o.captured // captured config (source/device) consumed by Spike B pipeline
+}
+
+// selectBackend resolves the requested backend, probing candidates in auto order.
+func selectBackend(name string, dryRun bool) backend.Backend {
+	if name == "" || name == "auto" {
+		for _, cand := range backend.Candidates() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_, err := cand.Backend.ListDisplays(ctx)
+			cancel()
+			if err == nil {
+				log.Printf("auto: selected backend %q", cand.Name)
+				return cand.Backend
+			}
+			log.Printf("auto: %s unavailable: %v", cand.Name, err)
+		}
+		log.Fatalf("auto: no usable backend found")
+	}
+	b, err := backend.Get(name)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	return b
+}
 
 func main() {
 	addr := flag.String("addr", ":52020", "WebTransport listen address (UDP)")
@@ -28,7 +103,32 @@ func main() {
 	fingerprintOnly := flag.Bool("fingerprint", false, "print the SHA-256 fingerprint and exit")
 	customCert := flag.String("cert", "", "TLS certificate path (ECDSA P-256 PEM)")
 	customKey := flag.String("key", "", "TLS private key path (ECDSA P-256 PEM)")
+
+	backendName := flag.String("backend", "auto", fmt.Sprintf("video backend: auto|%s", strings.Join(backend.Names(), "|")))
+	var bopts backendOpts
+	flag.StringVar(&bopts.captured, "captured", "", `captured backend opts: "source=kms,device=/dev/dri/card1"`)
+	flag.StringVar(&bopts.sunshine, "sunshine", "", `sunshine backend opts: "addr=127.0.0.1:47989"`)
+	flag.StringVar(&bopts.vnc, "vnc", "", `vnc backend opts: "addr=10.10.1.6:5901"`)
+	flag.StringVar(&bopts.rdp, "rdp", "", `rdp backend opts: "addr=10.10.1.6:3389"`)
+	dryRun := flag.Bool("dry-run", false, "list displays via the selected backend and exit")
 	flag.Parse()
+
+	configureBackends(bopts)
+	sel := selectBackend(*backendName, *dryRun)
+
+	if *dryRun {
+		displays, err := sel.ListDisplays(context.Background())
+		if err != nil {
+			log.Fatalf("dry-run: %v", err)
+		}
+		for _, d := range displays {
+			fmt.Printf("display id=%d %dx%d @ (%d,%d) %.2fhz\n", d.ID, d.Width, d.Height, d.X, d.Y, d.RefreshRate)
+		}
+		return
+	}
+
+	// Remember the selection for the session handlers.
+	activeBackend = sel
 
 	var tlsConfig *tls.Config
 	var cm *certManager
@@ -56,8 +156,8 @@ func main() {
 	}
 
 	wtUpgrader := &webtransport.Upgrader{
-		CheckOrigin:         func(r *http.Request) bool { return true },
-		ApplicationProtocols: []string{"moq-lite-04"},
+		CheckOrigin:          func(r *http.Request) bool { return true },
+		ApplicationProtocols: []string{"moq-lite-04"}, // kept for legacy client compat
 	}
 
 	wtServer := &webtransport.Server{
@@ -71,26 +171,6 @@ func main() {
 	}
 
 	wtMux := http.NewServeMux()
-	moqMux := moqt.NewTrackMux(0)
-	var moqBroadcastCtx context.Context
-	moqBroadcastCtx, moqBroadcastCancel = context.WithCancel(context.Background())
-
-	wtMux.Handle("/moq", &moqt.WebTransportHandler{
-		TrackMux: moqMux,
-		Config:   &moqt.Config{},
-		UpgradeFunc: func(w http.ResponseWriter, r *http.Request) (transport.WebTransportSession, error) {
-			s, err := wtUpgrader.Upgrade(w, r)
-			if err != nil {
-				return nil, err
-			}
-			return wrapWTSession(s), nil
-		},
-		Handler: moqt.HandleFunc(func(sess *moqt.Session) {
-			log.Printf("moq session from %s", sess.RemoteAddr())
-			<-sess.Context().Done()
-			log.Printf("moq session closed: %s", sess.RemoteAddr())
-		}),
-	})
 
 	wtMux.HandleFunc("/wt", func(w http.ResponseWriter, r *http.Request) {
 		remote := r.RemoteAddr
@@ -103,54 +183,6 @@ func main() {
 		}
 		log.Printf("WT upgrade succeeded from %s", remote)
 		go handleSession(s, cm)
-	})
-	moqMux.PublishFunc(moqBroadcastCtx, "/video", func(tw *moqt.TrackWriter) {
-		name := tw.TrackName
-		log.Printf("moq subscribe broadcast=/video track=%s", name)
-
-		if name == "catalog.json" {
-			stateMu.Lock()
-			w, h := 0, 0
-			if state != nil {
-				w, h = state.width, state.height
-			}
-			stateMu.Unlock()
-			catalog := fmt.Sprintf(`{"version":1,"video":{"renditions":{"video":{"codec":"h264","bitrate":0,"width":%d,"height":%d,"name":"video"}}}}`, w, h)
-			g, err := tw.OpenGroup()
-			if err != nil {
-				log.Printf("moq catalog: open group: %v", err)
-				return
-			}
-			f := moqt.NewFrame(len(catalog))
-			f.Write([]byte(catalog))
-			if err := g.WriteFrame(f); err != nil {
-				log.Printf("moq catalog: write frame: %v", err)
-				g.CancelWrite(0)
-				return
-			}
-			g.Close()
-			log.Printf("moq catalog served")
-			return
-		}
-
-		stateMu.Lock()
-		if state != nil {
-			state.moqTrackMu.Lock()
-			state.moqTracks[tw] = struct{}{}
-			log.Printf("moq video subscriber added, now %d", len(state.moqTracks))
-			state.moqTrackMu.Unlock()
-		}
-		stateMu.Unlock()
-		defer func() {
-			stateMu.Lock()
-			if state != nil {
-				state.moqTrackMu.Lock()
-				delete(state.moqTracks, tw)
-				state.moqTrackMu.Unlock()
-			}
-			stateMu.Unlock()
-		}()
-		<-tw.Context().Done()
 	})
 
 	wtServer.H3.Handler = wtMux
@@ -189,4 +221,3 @@ func main() {
 	stateMu.Unlock()
 	wtServer.Close()
 }
-

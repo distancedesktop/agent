@@ -2,15 +2,14 @@ package main
 
 import (
 	"context"
-	"io"
-	"net"
-	"os/exec"
 	"sync"
 
-	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/okdaichi/webtransport-go"
+
+	"distancedesktop/agent/src/backend"
 )
 
+// subscriber wraps one WebTransport session's control + video streams.
 type subscriber struct {
 	sess   *webtransport.Session
 	ctrl   *webtransport.Stream
@@ -18,30 +17,33 @@ type subscriber struct {
 	video  *webtransport.SendStream
 }
 
+// streamState tracks the one active video stream.
 type streamState struct {
-	displayID int
-	width     int
-	height    int
-	fps       int
-
-	capturedCtrl  net.Conn
-	capturedMedia net.Conn
-
-	ffmpeg    *exec.Cmd
-	ffmpegIn  io.WriteCloser
-	ffmpegOut io.ReadCloser
+	stream backend.Stream
 
 	subscribers map[*subscriber]struct{}
 	subMu       sync.Mutex
-	moqTracks   map[*moqt.TrackWriter]struct{}
-	moqTrackMu  sync.Mutex
 	stopPub     context.CancelFunc
 
 	owner *subscriber
 }
 
 var (
-	state              *streamState
-	stateMu            sync.Mutex
-	moqBroadcastCancel context.CancelFunc
+	state   *streamState
+	stateMu sync.Mutex
+
+	// activeBackend is resolved at startup from --backend/--<backend> flags.
+	activeBackend backend.Backend
 )
+
+// listDisplays queries the active backend (kept as a helper for session.go).
+func listDisplays() ([]backend.Display, error) {
+	if activeBackend == nil {
+		b, err := backend.Get("captured")
+		if err != nil {
+			return nil, err
+		}
+		activeBackend = b
+	}
+	return activeBackend.ListDisplays(context.Background())
+}

@@ -37,15 +37,7 @@ JSON control messages (bidirectional stream):
 {"type":"fingerprint-refresh","algorithm":"sha-256","fingerprint":"<hex>"}  // sent on connect + cert rotation
 ```
 
-Video: 64KB chunks of H.264/H.265/AV1 Annex B byte stream over the unidirectional stream.
-
-**Media over QUIC (MoQ)**: `https://<server>:52020/moq` — separate WebTransport session using `@moq/lite`.
-- gomoqt `WebTransportHandler` with `UpgradeFunc` wrapping via `okdaichi/webtransport-go`
-- `PublishFunc("/video", ...)` registers each subscriber's `TrackWriter`
-- Each ffmpeg chunk → one MoQ group → one frame
-- Old uni-stream model kept for backwards compat; MoQ runs alongside it.
-- gomoqt v0.15.0, falls back to IETF/moql mode (no ALPN h3/moq).
-
+**Endpoint**: `https://<server>:52020/wt` (WebTransport, QUIC over UDP)
 ### Cert system
 
 - Self-signed ECDSA P-256 certificate, 13-day validity
@@ -67,17 +59,7 @@ await transport.ready;
 const stream = await transport.createBidirectionalStream();
 ```
 
-MoQ video connection:
-```js
-const moqTransport = new WebTransport(`https://${ip}:52020/moq`, {
-  serverCertificateHashes: [{
-    algorithm: "sha-256",
-    value: new Uint8Array(fingerprintBytes)
-  }]
-});
-await moqTransport.ready;
-// Use @moq/lite to subscribe to "/video"
-```
+MoQ has been removed from the agent (was `/moq` + gomoqt). Raw WT uni-stream is the only media path.
 
 ### Web UI
 
@@ -95,17 +77,25 @@ Embedded HTML at `http://<server>:52022/` showing:
 | `--fingerprint` | Print SHA-256 fingerprint and exit |
 | `--cert cert.pem` | Custom TLS certificate (ECDSA P-256 PEM) |
 | `--key key.pem` | Custom TLS private key (ECDSA P-256 PEM) |
+| `--backend auto\|captured\|sunshine\|vnc\|rdp` | Video backend (auto probes in order captured → sunshine → vnc → rdp) |
+| `--captured "source=...,device=..."` | captured backend opts (source/device for Spike B pipelines) |
+| `--sunshine "addr=host:47989"` | Sunshine/Moonlight host address |
+| `--vnc "addr=host:5901"` | VNC server address |
+| `--rdp "addr=host:3389"` | RDP server address |
+| `--dry-run` | List displays via the selected backend and exit |
 
 ### Architecture
 
 ```
-captured (Unix sockets)
-  └─ raw BGRA frames → agent
-                         ├─ ffmpeg (GPU encode via VideoToolbox/NVENC/AMF/QSV/VAAPI/libx264)
-                         │    └─ H.264/H.265/AV1 Annex B byte stream → stdout
-                         └─ publishStream goroutine
-                              ├─ writes 64KB chunks to each subscriber's unidirectional stream
-                              └─ writes each chunk as a MoQ frame/group to each MoQ TrackWriter
+backend.Backend { ListDisplays; StartStream -> Stream <-chan H264Chunk }   (src/backend/backend.go)
+  ├─ captured  — unix-socket daemon + ffmpeg encode (src/backend/captured.go)
+  ├─ sunshine  — Moonlight RTSP passthrough H264 (STUB, src/backend/sunshine.go)
+  ├─ vnc       — RFB frame polling (STUB, src/backend/vnc.go)
+  └─ rdp       — MS-RDPBCGR (STUB, src/backend/rdp.go)
+
+activeBackend (chosen via --backend at startup):
+  └─ StartStream → Stream.Chunks() channel
+       └─ publishStream goroutine writes each chunk to every subscriber's WT uni stream
 ```
 
 ### Start sequence
