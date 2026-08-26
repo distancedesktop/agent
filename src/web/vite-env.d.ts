@@ -1,57 +1,10 @@
 /// <reference types="vite/client" />
 
-// WebCodecs / WebTransport / BarcodeDetector shims for older lib.dom typings.
-// All major evergreen browsers ship these; we only need compile-time types.
+// BarcodeDetector (Chrome/Edge) for scanning QR connection payloads.
+// WebCodecs (VideoDecoder / EncodedVideoChunk / VideoFrame) and WebTransport
+// types are provided by lib.dom in modern TypeScript, so we only shim what is
+// missing there.
 
-interface VideoFrame {
-  readonly timestamp: number
-  readonly duration: number | null
-  close(): void
-}
-
-interface EncodedVideoChunkInit {
-  type: 'key' | 'delta'
-  timestamp: number
-  duration?: number
-  data: BufferSource
-}
-
-declare class EncodedVideoChunk {
-  constructor(init: EncodedVideoChunkInit)
-  readonly type: 'key' | 'delta'
-  readonly timestamp: number
-  readonly duration: number | null
-  copyTo(destination: BufferSource): void
-}
-
-interface VideoDecoderConfig {
-  codec: string
-  width?: number
-  height?: number
-  description?: BufferSource
-  optimizeForLatency?: boolean
-}
-
-interface VideoDecoderInit {
-  output: (frame: VideoFrame) => void
-  error: (error: DOMException) => void
-}
-
-declare class VideoDecoder {
-  constructor(init: VideoDecoderInit)
-  readonly state: 'unconfigured' | 'configured' | 'closed'
-  configure(config: VideoDecoderConfig): void
-  decode(chunk: EncodedVideoChunk): void
-  flush(): Promise<void>
-  reset(): void
-  close(): void
-}
-
-interface VideoDecoderHeapSizeLimit {
-  readonly maxEncodedBytes: number
-}
-
-// BarcodeDetector (Chrome/Edge) for QR scanning of connect payloads.
 interface DetectedBarcode {
   readonly rawValue: string
   readonly format: string

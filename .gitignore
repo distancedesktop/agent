@@ -9,3 +9,5 @@ build/
 
 # macOS 
 .DS_STORE
+# web node modules
+/src/web/node_modules/

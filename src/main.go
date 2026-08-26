@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	_ "embed"
 	"flag"
 	"fmt"
 	"log"
@@ -20,9 +19,6 @@ import (
 
 	"distancedesktop/agent/src/backend"
 )
-
-//go:embed web/index.html
-var webHTML string
 
 // backendOpts holds parsed --<backend> flag values.
 type backendOpts struct {
