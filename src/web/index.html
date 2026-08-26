@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Distance Desktop</title>
+  </head>
+  <body>
+    <div id="app">
+      <!-- Connect screen (fingerprint paste / QR / recent hosts / display picker) -->
+      <section id="connect" class="screen"></section>
+
+      <!-- Viewer screen -->
+      <section id="viewer" class="screen hidden">
+        <canvas id="stage"></canvas>
+        <div id="stats" class="stats hidden"></div>
+        <div id="viewer-hint" class="viewer-hint">
+          Click to capture mouse &middot; press <kbd>Esc</kbd> to release &middot; <kbd>~</kbd> toggles stats
+        </div>
+      </section>
+
+      <div id="toast" class="toast hidden"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
