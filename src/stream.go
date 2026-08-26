@@ -45,7 +45,9 @@ func startStream(displayID, fps int, codec string, bitrate int, caller *subscrib
 		Codec:     codec,
 		Bitrate:   bitrate,
 	}
-	stream, err := b.StartStream(context.Background(), req)
+	startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer startCancel()
+	stream, err := b.StartStream(startCtx, req)
 	if err != nil {
 		return fmt.Errorf("%s start-stream: %w", b.Name(), err)
 	}
@@ -114,7 +116,6 @@ func teardown() {
 		if sub.video != nil {
 			sub.video.Close()
 		}
-		sub.sess.CloseWithError(0, "stream ended")
 	}
 	log.Printf("teardown: closed %d subscriber(s)", subCount)
 	ss.subscribers = nil

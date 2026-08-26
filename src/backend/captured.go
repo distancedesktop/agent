@@ -114,6 +114,9 @@ func (s *capturedStream) Close() error {
 	}
 	s.closed = true
 	s.cancel()
+	if s.ffmpeg != nil && s.ffmpeg.Process != nil {
+		s.ffmpeg.Process.Kill()
+	}
 	s.stdin.Close()
 	s.ffmpeg.Wait()
 	s.media.Close()
@@ -168,6 +171,10 @@ func (b *CapturedBackend) StartStream(ctx context.Context, req StartRequest) (St
 		return nil, fmt.Errorf("media socket: %w", err)
 	}
 
+	if deadline, ok := ctx.Deadline(); ok {
+		media.SetReadDeadline(deadline)
+	}
+
 	var hdr [8]byte
 	if _, err := io.ReadFull(media, hdr[:]); err != nil {
 		ctrl.Close()
@@ -176,6 +183,18 @@ func (b *CapturedBackend) StartStream(ctx context.Context, req StartRequest) (St
 	}
 	w := int(binary.BigEndian.Uint32(hdr[0:4]))
 	h := int(binary.BigEndian.Uint32(hdr[4:8]))
+	const maxDim = 16384
+	if w <= 0 || h <= 0 || w > maxDim || h > maxDim {
+		ctrl.Close()
+		media.Close()
+		return nil, fmt.Errorf("first frame: invalid dimensions %dx%d", w, h)
+	}
+	const maxPixels = maxDim * maxDim
+	if int64(w)*int64(h) > maxPixels {
+		ctrl.Close()
+		media.Close()
+		return nil, fmt.Errorf("first frame: dimension overflow %dx%d", w, h)
+	}
 	log.Printf("captured: first frame %dx%d", w, h)
 	firstFrame := make([]byte, w*h*4)
 	if _, err := io.ReadFull(media, firstFrame); err != nil {
@@ -234,12 +253,18 @@ func (b *CapturedBackend) StartStream(ctx context.Context, req StartRequest) (St
 	// BGRA frames -> ffmpeg stdin.
 	go func() {
 		var buf [8]byte
+		const maxDim = 16384
+		const maxPixels = maxDim * maxDim
 		for {
 			if _, err := io.ReadFull(media, buf[:]); err != nil {
 				break
 			}
 			fw := int(binary.BigEndian.Uint32(buf[0:4]))
 			fh := int(binary.BigEndian.Uint32(buf[4:8]))
+			if fw <= 0 || fh <= 0 || fw > maxDim || fh > maxDim || int64(fw)*int64(fh) > maxPixels {
+				log.Printf("captured: skipping invalid frame dimensions %dx%d", fw, fh)
+				break
+			}
 			frame := make([]byte, fw*fh*4)
 			if _, err := io.ReadFull(media, frame); err != nil {
 				break

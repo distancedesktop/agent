@@ -198,7 +198,6 @@ export class ConnectScreen {
       ]) as HTMLButtonElement
       tile.addEventListener('click', () => {
         this.deps.startStream(d.id)
-        this.root.classList.add('hidden')
       })
       grid.append(tile)
     }
@@ -207,11 +206,31 @@ export class ConnectScreen {
   }
 
   private applyJson(text: string): boolean {
-    let p: ConnectPayload
+    let p: any
     try {
       p = JSON.parse(text.trim())
     } catch {
       toast('Invalid connection JSON', 'err')
+      return false
+    }
+    if (p === null || Array.isArray(p) || typeof p !== 'object') {
+      toast('Invalid connection JSON: expected object', 'err')
+      return false
+    }
+    if (p.fingerprint && typeof p.fingerprint !== 'string') {
+      toast('Invalid connection JSON: fingerprint must be string', 'err')
+      return false
+    }
+    if (p.host && typeof p.host !== 'string') {
+      toast('Invalid connection JSON: host must be string', 'err')
+      return false
+    }
+    if (p.port !== undefined && typeof p.port !== 'number') {
+      toast('Invalid connection JSON: port must be number', 'err')
+      return false
+    }
+    if (p.label !== undefined && typeof p.label !== 'string') {
+      toast('Invalid connection JSON: label must be string', 'err')
       return false
     }
     if (p.fingerprint) this.fpInput.value = p.fingerprint
@@ -242,6 +261,10 @@ export class ConnectScreen {
     navigator.mediaDevices
       .getUserMedia({ video: { facingMode: 'environment' } })
       .then(async (stream) => {
+        if (!modal.isConnected) {
+          stream.getTracks().forEach((t) => t.stop())
+          return
+        }
         this.qrStream = stream
         video.srcObject = stream
         await video.play()

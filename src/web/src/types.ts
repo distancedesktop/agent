@@ -10,6 +10,15 @@ export interface Display {
   refresh_rate: number
 }
 
+// Input message types (not yet implemented on server; defined for future use)
+export type InputMessage =
+  | { type: 'input'; kind: 'mouse'; dx: number; dy: number; buttons: number }
+  | { type: 'input'; kind: 'mousedown'; button: number }
+  | { type: 'input'; kind: 'mouseup'; button: number }
+  | { type: 'input'; kind: 'wheel'; dx: number; dy: number }
+  | { type: 'input'; kind: 'key'; code: string; down: boolean }
+  | { type: 'input'; kind: 'touch'; id: number; x: number; y: number; phase: 'start' | 'move' | 'end' }
+
 // Client -> Server
 export type ClientMessage =
   | { type: 'list-displays' }
@@ -21,16 +30,7 @@ export type ClientMessage =
       bitrate?: number
     }
   | { type: 'stop' }
-  // Input messages (server currently acks/ignores; handled by backend work)
   | InputMessage
-
-export type InputMessage =
-  | { type: 'input'; kind: 'mouse'; dx: number; dy: number; buttons: number }
-  | { type: 'input'; kind: 'mousedown'; button: number }
-  | { type: 'input'; kind: 'mouseup'; button: number }
-  | { type: 'input'; kind: 'wheel'; dx: number; dy: number }
-  | { type: 'input'; kind: 'key'; code: string; down: boolean }
-  | { type: 'input'; kind: 'touch'; id: number; x: number; y: number; phase: 'start' | 'move' | 'end' }
 
 // Server -> Client
 export type ServerMessage =

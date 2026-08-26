@@ -81,14 +81,26 @@ export class Decoder {
     let i = 0
     const buf = this.buf
     while (i + 2 < buf.length) {
-      if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1) {
-        if (start < i) {
-          const nal = buf.subarray(start, i)
-          this.decodeNal(nal)
+      if (buf[i] === 0 && buf[i + 1] === 0) {
+        if (i + 3 < buf.length && buf[i + 2] === 0 && buf[i + 3] === 1) {
+          // 4-byte start code: 00 00 00 01
+          if (start < i) {
+            const nal = buf.subarray(start, i)
+            this.decodeNal(nal)
+          }
+          start = i + 4
+          i = start
+          continue
+        } else if (buf[i + 2] === 1) {
+          // 3-byte start code: 00 00 01
+          if (start < i) {
+            const nal = buf.subarray(start, i)
+            this.decodeNal(nal)
+          }
+          start = i + 3
+          i = start
+          continue
         }
-        start = i + 3
-        i = start
-        continue
       }
       i++
     }

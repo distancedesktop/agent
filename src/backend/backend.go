@@ -76,7 +76,7 @@ func Get(name string) (Backend, error) {
 	defer regMu.Unlock()
 	b, ok := registry[name]
 	if !ok {
-		return nil, fmt.Errorf("backend: unknown backend %q (available: %v)", name, Names())
+		return nil, fmt.Errorf("backend: unknown backend %q (available: %v)", name, namesSorted())
 	}
 	return b, nil
 }
@@ -85,6 +85,12 @@ func Get(name string) (Backend, error) {
 func Names() []string {
 	regMu.Lock()
 	defer regMu.Unlock()
+	return namesSorted()
+}
+
+// namesSorted returns the sorted list of registered backend names.
+// Must be called with regMu held.
+func namesSorted() []string {
 	out := make([]string, 0, len(registry))
 	for n := range registry {
 		out = append(out, n)

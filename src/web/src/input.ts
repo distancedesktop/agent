@@ -80,6 +80,10 @@ export class InputController {
 
   release(): void {
     if (this.locked && document.exitPointerLock) document.exitPointerLock()
+    const kb = (navigator as Navigator & { keyboard?: { unlock?: () => void } }).keyboard
+    if (kb?.unlock) {
+      kb.unlock()
+    }
   }
 
   detach(): void {

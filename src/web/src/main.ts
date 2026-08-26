@@ -60,6 +60,7 @@ function handleMessage(msg: ControlMessage): void {
 
 function onStarted(msg: Extract<ControlMessage, { type: 'started' }>): void {
   decoder.configure(msg.codec, msg.width, msg.height)
+  stats.update({ width: msg.width, height: msg.height })
   connectEl.classList.add('hidden')
   viewerEl.classList.remove('hidden')
   stats.show()

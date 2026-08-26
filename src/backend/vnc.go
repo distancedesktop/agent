@@ -47,6 +47,9 @@ func (b *VNCBackend) ListDisplays(ctx context.Context) ([]Display, error) {
 		return nil, fmt.Errorf("vnc: %w", err)
 	}
 	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
 	banner := make([]byte, 12)
 	n, err := bufio.NewReader(conn).Read(banner)
 	if err != nil {

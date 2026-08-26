@@ -17,8 +17,8 @@ Reads BGRA from captured, GPU-encodes via ffmpeg, publishes over WebTransport/QU
 
 | Port | Transport | Purpose |
 |------|-----------|---------|
-| 52020 | UDP | WebTransport — `/wt` for JSON control, `/moq` for MoQ media (same QUIC conn) |
-| 52022 | TCP | Web UI (plain HTTP, fingerprint display) |
+| 52020 | UDP | WebTransport — `/wt` for JSON control + uni-stream media (QUIC over UDP) |
+| 52022 | TCP | Web UI (HTTPS, fingerprint display) |
 
 ### Protocol
 
@@ -59,7 +59,7 @@ await transport.ready;
 const stream = await transport.createBidirectionalStream();
 ```
 
-MoQ has been removed from the agent (was `/moq` + gomoqt). Raw WT uni-stream is the only media path.
+**Note**: MoQ integration has been removed. The agent now publishes video exclusively over WebTransport unidirectional streams (raw H.264 Annex B).
 
 ### Web UI
 
@@ -86,7 +86,7 @@ Embedded HTML at `http://<server>:52022/` showing:
 
 ### Architecture
 
-```
+```text
 backend.Backend { ListDisplays; StartStream -> Stream <-chan H264Chunk }   (src/backend/backend.go)
   ├─ captured  — unix-socket daemon + ffmpeg encode (src/backend/captured.go)
   ├─ sunshine  — Moonlight RTSP passthrough H264 (STUB, src/backend/sunshine.go)
@@ -128,19 +128,10 @@ activeBackend (chosen via --backend at startup):
 4. Client caches additional fingerprint
 5. On next connection, includes both old and new hashes in `serverCertificateHashes`
 
-## MoQ integration
-
-- `/moq` on same UDP port as `/wt` — separate WebTransport session using gomoqt.
-- Each MoQ subscriber gets a `*moqt.TrackWriter` via `PublishFunc("/video", ...)`.
-- `publishStream` writes each ffmpeg chunk to all `TrackWriter`s (one MoQ group + one frame per chunk).
-- On teardown, `moqBroadcastCancel()` unregisters the publish handler.
-- Server TLS `NextProtos` stays `["h3"]` — client MoQ WebTransport negotiates `h3`, `@moq/net` falls back to IETF/moql mode.
-
 ## Dependencies
 
-- `github.com/okdaichi/webtransport-go` — WebTransport over QUIC/HTTP-3 (fork used by gomoqt)
+- `github.com/okdaichi/webtransport-go` — WebTransport over QUIC/HTTP-3
 - `github.com/quic-go/quic-go` — QUIC transport layer
-- `github.com/qumo-dev/gomoqt` — Media over QUIC (MoQ) transport
 
 ## Build
 

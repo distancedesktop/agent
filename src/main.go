@@ -152,7 +152,29 @@ func main() {
 	}
 
 	wtUpgrader := &webtransport.Upgrader{
-		CheckOrigin:          func(r *http.Request) bool { return true },
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			host := r.Host
+			if origin == "https://"+host || origin == "http://"+host {
+				return true
+			}
+			if cm != nil && *webAddr != "" {
+				_, webPort, _ := net.SplitHostPort(*webAddr)
+				hostname, _, _ := net.SplitHostPort(host)
+				if hostname == "" {
+					hostname = host
+				}
+				allowedWebOrigin := "https://" + net.JoinHostPort(hostname, webPort)
+				if origin == allowedWebOrigin {
+					return true
+				}
+			}
+			log.Printf("WT upgrade rejected origin %q from %s", origin, r.RemoteAddr)
+			return false
+		},
 		ApplicationProtocols: []string{"moq-lite-04"}, // kept for legacy client compat
 	}
 

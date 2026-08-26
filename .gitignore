@@ -7,7 +7,7 @@ env/
 # Build directory
 build/
 
-# macOS 
-.DS_STORE
+# macOS
+.DS_Store
 # web node modules
 /src/web/node_modules/

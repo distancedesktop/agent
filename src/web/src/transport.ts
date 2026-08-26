@@ -78,9 +78,14 @@ export class Transport {
     } as any)
     this.wt = wt
 
-    wt.closed.then(() => {
-      if (!this.closed) this.msgHandler?.({ type: 'stream-ended' } as ServerMessage)
-    })
+    wt.closed.then(
+      () => {
+        if (!this.closed) this.msgHandler?.({ type: 'stream-ended' } as ServerMessage)
+      },
+      () => {
+        if (!this.closed) this.msgHandler?.({ type: 'stream-ended' } as ServerMessage)
+      }
+    )
 
     await wt.ready
 

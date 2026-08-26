@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 //go:embed web/dist
@@ -59,11 +60,15 @@ func startWebUI(addr string, cm *certManager) {
 	tlsCfg := &tls.Config{
 		GetCertificate: cm.getCertificate,
 		NextProtos:     []string{"h2", "http/1.1"},
+		MinVersion:     tls.VersionTLS12,
 	}
 	srv := &http.Server{
-		Addr:      addr,
-		Handler:   mux,
-		TLSConfig: tlsCfg,
+		Addr:         addr,
+		Handler:      mux,
+		TLSConfig:    tlsCfg,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 	log.Printf("Web UI on https://%s", addr)
 	if err := srv.ListenAndServeTLS("", ""); err != nil {
