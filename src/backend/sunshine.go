@@ -29,7 +29,6 @@ import (
 	"log"
 	"net"
 	"strconv"
-	"strings"
 )
 
 func init() { Register(&SunshineBackend{}) }
@@ -97,7 +96,7 @@ func tcpProbe(ctx context.Context, addr string, defPort int) error {
 		return fmt.Errorf("no address configured")
 	}
 	target := addr
-	if !strings.Contains(addr, ":") || strings.Count(addr, ":") == 0 {
+	if _, _, err := net.SplitHostPort(addr); err != nil {
 		target = net.JoinHostPort(addr, strconv.Itoa(defPort))
 	}
 	var d net.Dialer

@@ -4,10 +4,8 @@
 // split the byte stream into NAL units and feed each to the decoder.
 
 function mapCodec(codec: string, width?: number, height?: number): any {
-  let c = 'avc1.42E01E' // Constrained Baseline 3.0 — safe default for H264
-  if (codec === 'hevc' || codec === 'h265') c = 'hvc1.1.6.L93.B0'
-  else if (codec === 'av1') c = 'av01.0.05M.08'
-  else if (codec === 'vp9') c = 'vp09.00.10.08'
+  // H264-only: agent encodes exclusively as H.264 Annex B
+  const c = 'avc1.42E01E'
   const cfg: any = { codec: c }
   if (width && height) {
     cfg.width = width
@@ -22,6 +20,8 @@ export class Decoder {
   private ctx: CanvasRenderingContext2D
   private buf = new Uint8Array(0)
   private dts = 0
+  private sps: Uint8Array | null = null
+  private pps: Uint8Array | null = null
 
   private frameCount = 0
   private fpsWindowStart = performance.now()
@@ -111,15 +111,37 @@ export class Decoder {
   private decodeNal(nal: Uint8Array): void {
     if (nal.length === 0) return
     const nalType = nal[0] & 0x1f
-    const type: 'key' | 'delta' = nalType === 5 ? 'key' : 'delta'
-    this.dts += 1000 // µs, monotonic in decode order
+    if (nalType === 7) {
+      this.sps = nal.slice()
+      return
+    }
+    if (nalType === 8) {
+      this.pps = nal.slice()
+      return
+    }
+    // Build access unit: prepend cached SPS/PPS to IDR so decoder has params
+    let data: Uint8Array
+    let type: 'key' | 'delta'
+    if (nalType === 5) {
+      type = 'key'
+      if (this.sps && this.pps) {
+        data = annexBConcat([this.sps, this.pps, nal])
+      } else {
+        data = nal.slice()
+      }
+    } else if (nalType === 6) {
+      // SEI — skip
+      return
+    } else {
+      type = 'delta'
+      data = nal.slice()
+    }
+    this.dts += 33333 // ~30fps access unit tick
     try {
       this.videoDecoder!.decode(
-        new EncodedVideoChunk({ type, timestamp: this.dts, data: nal as unknown as BufferSource })
+        new EncodedVideoChunk({ type, timestamp: this.dts, data: data as unknown as BufferSource })
       )
     } catch (e) {
-      // Decoding a NAL before SPS/PPS is configured can throw; ignore until
-      // the stream establishes a valid state.
       if (!(e instanceof DOMException && e.name === 'InvalidStateError')) {
         console.warn('[decoder] decode threw', e)
       }
@@ -144,6 +166,8 @@ export class Decoder {
   reset(): void {
     this.buf = new Uint8Array(0)
     this.dts = 0
+    this.sps = null
+    this.pps = null
     try {
       this.videoDecoder?.reset()
     } catch {
@@ -165,5 +189,20 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   const out = new Uint8Array(a.length + b.length)
   out.set(a, 0)
   out.set(b, a.length)
+  return out
+}
+
+function annexBConcat(nals: Uint8Array[]): Uint8Array {
+  const sc = new Uint8Array([0, 0, 0, 1])
+  let total = 0
+  for (const n of nals) total += 4 + n.length
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const n of nals) {
+    out.set(sc, off)
+    off += 4
+    out.set(n, off)
+    off += n.length
+  }
   return out
 }

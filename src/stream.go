@@ -78,6 +78,13 @@ func startStream(displayID, fps int, codec string, bitrate int, caller *subscrib
 
 // publishStream fans backend chunks out to all subscribers.
 func publishStream(ctx context.Context, ss *streamState) {
+	defer func() {
+		stateMu.Lock()
+		if state == ss {
+			teardown()
+		}
+		stateMu.Unlock()
+	}()
 	for chunk := range ss.stream.Chunks() {
 		if ctx.Err() != nil {
 			return

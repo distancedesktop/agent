@@ -45,34 +45,35 @@ func parseKV(s string) map[string]string {
 
 // configureBackends builds the concrete backends from flags.
 func configureBackends(o backendOpts) {
-	reg := func(name, opts string, apply func(map[string]string)) {
-		if opts == "" {
-			return
+	for _, entry := range []struct {
+		name string
+		opts string
+	}{
+		{"sunshine", o.sunshine},
+		{"vnc", o.vnc},
+		{"rdp", o.rdp},
+	} {
+		if entry.opts == "" {
+			continue
 		}
-		b, err := backend.Get(name)
+		b, err := backend.Get(entry.name)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}
+		addr := parseKV(entry.opts)["addr"]
 		switch t := b.(type) {
 		case *backend.SunshineBackend:
-			t.Addr = parseKV(opts)["addr"]
+			t.Addr = addr
 		case *backend.VNCBackend:
-			t.Addr = parseKV(opts)["addr"]
+			t.Addr = addr
 		case *backend.RDPBackend:
-			t.Addr = parseKV(opts)["addr"]
-		default:
-			apply(parseKV(opts))
+			t.Addr = addr
 		}
 	}
-	applyCaptured := func(kv map[string]string) {} // source=/device= handled inside captured pipeline
-	reg("sunshine", o.sunshine, applyCaptured)
-	reg("vnc", o.vnc, applyCaptured)
-	reg("rdp", o.rdp, applyCaptured)
-	_ = o.captured // captured config (source/device) consumed by Spike B pipeline
 }
 
 // selectBackend resolves the requested backend, probing candidates in auto order.
-func selectBackend(name string, dryRun bool) backend.Backend {
+func selectBackend(name string) backend.Backend {
 	if name == "" || name == "auto" {
 		for _, cand := range backend.Candidates() {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -110,7 +111,7 @@ func main() {
 	flag.Parse()
 
 	configureBackends(bopts)
-	sel := selectBackend(*backendName, *dryRun)
+	sel := selectBackend(*backendName)
 
 	if *dryRun {
 		displays, err := sel.ListDisplays(context.Background())

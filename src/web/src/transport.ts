@@ -66,6 +66,7 @@ export class Transport {
   }
 
   async connect(opts: ConnectOptions): Promise<void> {
+    this.closed = false
     const hash = hexToBytes(opts.fingerprintHex)
     if (hash.length !== 32) {
       throw new Error('fingerprint must be a 32-byte SHA-256 hex string')
@@ -108,7 +109,9 @@ export class Transport {
       this.pendingSince = performance.now()
     }
     const bytes = this.enc.encode(JSON.stringify(msg) + '\n')
-    this.ctrlWriter.write(bytes)
+    this.ctrlWriter.write(bytes).catch(() => {
+      if (!this.closed) this.msgHandler?.({ type: 'stream-ended' } as ServerMessage)
+    })
   }
 
   listDisplays(): void {
@@ -130,6 +133,7 @@ export class Transport {
   close(): void {
     this.closed = true
     if (this.statsTimer) window.clearInterval(this.statsTimer)
+    this.statsTimer = undefined
     try {
       this.ctrlWriter?.close()
     } catch {
@@ -140,6 +144,9 @@ export class Transport {
     } catch {
       /* ignore */
     }
+    this.wt = null
+    this.ctrlWriter = null
+    this.ctrlReader = null
   }
 
   private async readControlLoop(): Promise<void> {

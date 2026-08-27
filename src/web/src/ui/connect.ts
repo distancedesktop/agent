@@ -139,7 +139,7 @@ export class ConnectScreen {
     fetch('/api/info')
       .then((r) => r.json())
       .then((d) => {
-        if (d?.fingerprint) {
+        if (d?.fingerprint && !this.fpInput.value) {
           this.fpInput.value = d.fingerprint
         }
         if (Array.isArray(d?.ips) && d.ips.length && !this.hostInput.value) {

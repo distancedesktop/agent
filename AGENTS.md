@@ -37,7 +37,6 @@ JSON control messages (bidirectional stream):
 {"type":"fingerprint-refresh","algorithm":"sha-256","fingerprint":"<hex>"}  // sent on connect + cert rotation
 ```
 
-**Endpoint**: `https://<server>:52020/wt` (WebTransport, QUIC over UDP)
 ### Cert system
 
 - Self-signed ECDSA P-256 certificate, 13-day validity
@@ -87,7 +86,7 @@ Embedded HTML at `http://<server>:52022/` showing:
 ### Architecture
 
 ```text
-backend.Backend { ListDisplays; StartStream -> Stream <-chan H264Chunk }   (src/backend/backend.go)
+backend.Backend { ListDisplays(ctx) ([]Display,error); StartStream(ctx, StartRequest) (Stream,error); Stream.Chunks() <-chan H264Chunk }   (src/backend/backend.go)
   ├─ captured  — unix-socket daemon + ffmpeg encode (src/backend/captured.go)
   ├─ sunshine  — Moonlight RTSP passthrough H264 (STUB, src/backend/sunshine.go)
   ├─ vnc       — RFB frame polling (STUB, src/backend/vnc.go)

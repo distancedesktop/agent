@@ -63,6 +63,7 @@ function onStarted(msg: Extract<ControlMessage, { type: 'started' }>): void {
   stats.update({ width: msg.width, height: msg.height })
   connectEl.classList.add('hidden')
   viewerEl.classList.remove('hidden')
+  // width/height already published to overlay; now reveal it
   stats.show()
   input.attach(canvas)
   fadeHint()
@@ -70,6 +71,7 @@ function onStarted(msg: Extract<ControlMessage, { type: 'started' }>): void {
 }
 
 function onStreamEnded(kind: string): void {
+  transport.close()
   toast(kind === 'stopped' ? 'Stream stopped' : 'Stream ended', 'info')
   input.detach()
   decoder.reset()

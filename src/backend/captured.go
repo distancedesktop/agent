@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 func init() { Register(&CapturedBackend{}) }
@@ -64,8 +65,14 @@ func (b *CapturedBackend) ListDisplays(ctx context.Context) ([]Display, error) {
 	dec := json.NewDecoder(conn)
 
 	log.Printf("captured: sending list-displays")
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
 	if err := enc.Encode(map[string]string{"type": "list-displays"}); err != nil {
 		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
 	}
 	var resp capturedDisplayResp
 	if err := dec.Decode(&resp); err != nil {
@@ -115,10 +122,19 @@ func (s *capturedStream) Close() error {
 	s.closed = true
 	s.cancel()
 	if s.ffmpeg != nil && s.ffmpeg.Process != nil {
-		s.ffmpeg.Process.Kill()
+		_ = s.ffmpeg.Process.Kill()
 	}
-	s.stdin.Close()
-	s.ffmpeg.Wait()
+	if s.stdin != nil {
+		s.stdin.Close()
+	}
+	if s.ffmpeg != nil {
+		done := make(chan struct{})
+		go func() { s.ffmpeg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
 	s.media.Close()
 	json.NewEncoder(s.ctrl).Encode(map[string]string{"type": "stop-stream"})
 	s.ctrl.Close()
@@ -196,6 +212,8 @@ func (b *CapturedBackend) StartStream(ctx context.Context, req StartRequest) (St
 		return nil, fmt.Errorf("first frame: dimension overflow %dx%d", w, h)
 	}
 	log.Printf("captured: first frame %dx%d", w, h)
+	// handshake done — clear deadline for steady-state streaming reads
+	media.SetReadDeadline(time.Time{})
 	firstFrame := make([]byte, w*h*4)
 	if _, err := io.ReadFull(media, firstFrame); err != nil {
 		ctrl.Close()
