@@ -37,6 +37,23 @@ JSON control messages (bidirectional stream):
 {"type":"fingerprint-refresh","algorithm":"sha-256","fingerprint":"<hex>"}  // sent on connect + cert rotation
 ```
 
+`start` also accepts optional `codec` and `bitrate`.
+
+On connect the agent pushes `fingerprint-refresh` (only when it manages its own
+cert) followed by an **unsolicited `displays`**, before the client asks for
+anything. Clients must tolerate `displays` arriving unprompted.
+
+Unrecognized message types are answered with
+`{"type":"error","message":"unknown type: <t>"}`. There is currently no `input`
+or `ping` handler.
+
+### Origin checks
+
+WT upgrades accept an empty `Origin`, an `Origin` matching the request `Host`,
+and the agent's own `https://<host>:<webPort>`. A viewer served from any other
+origin (reverse proxy, separate web deployment) is rejected unless that origin is
+passed with `--allow-origin`.
+
 ### Cert system
 
 - Self-signed ECDSA P-256 certificate, 13-day validity
@@ -81,6 +98,7 @@ Embedded HTML at `http://<server>:52022/` showing:
 | `--sunshine "addr=host:47989"` | Sunshine/Moonlight host address |
 | `--vnc "addr=host:5901"` | VNC server address |
 | `--rdp "addr=host:3389"` | RDP server address |
+| `--allow-origin <origin>` | Additional allowed browser `Origin` for WT upgrades (repeatable; `*` allows any). Needed when the viewer is hosted somewhere other than the agent's own `:52022`, e.g. behind a reverse proxy. |
 | `--dry-run` | List displays via the selected backend and exit |
 
 ### Architecture
@@ -126,6 +144,17 @@ activeBackend (chosen via --backend at startup):
 3. Sends `{"type":"fingerprint-refresh","algorithm":"sha-256","fingerprint":"<hex>"}` to all connected subs
 4. Client caches additional fingerprint
 5. On next connection, includes both old and new hashes in `serverCertificateHashes`
+
+**Caveat:** the rotation broadcast only reaches sessions subscribed to a *live*
+stream — `broadcastControlMsg` returns early when no stream is active, and
+subscribers are only registered when a stream exists at connect time. A
+connected-but-idle client is not notified. The connect-time push in
+`handleSession` is unconditional.
+
+**With `--cert`/`--key`** there is no cert manager at all: no fingerprint push,
+no rotation loop, and no web UI on `:52022`. That is the reverse-proxy /
+publicly-trusted-cert mode, where clients connect without
+`serverCertificateHashes`.
 
 ## Dependencies
 

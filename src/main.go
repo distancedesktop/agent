@@ -108,6 +108,8 @@ func main() {
 	flag.StringVar(&bopts.vnc, "vnc", "", `vnc backend opts: "addr=10.10.1.6:5901"`)
 	flag.StringVar(&bopts.rdp, "rdp", "", `rdp backend opts: "addr=10.10.1.6:3389"`)
 	dryRun := flag.Bool("dry-run", false, "list displays via the selected backend and exit")
+	var allowOrigins stringList
+	flag.Var(&allowOrigins, "allow-origin", "additional allowed browser Origin for WebTransport upgrades (repeatable, e.g. https://distance.example.com); \"*\" allows any")
 	flag.Parse()
 
 	configureBackends(bopts)
@@ -170,6 +172,13 @@ func main() {
 				}
 				allowedWebOrigin := "https://" + net.JoinHostPort(hostname, webPort)
 				if origin == allowedWebOrigin {
+					return true
+				}
+			}
+			// Operator-supplied origins, for viewers hosted elsewhere (reverse
+			// proxy, CDN, separate web deployment).
+			for _, allowed := range allowOrigins {
+				if allowed == "*" || allowed == origin {
 					return true
 				}
 			}

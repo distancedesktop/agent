@@ -2,12 +2,23 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/okdaichi/webtransport-go"
 
 	"distancedesktop/agent/src/backend"
 )
+
+// stringList collects a repeatable string flag (e.g. --allow-origin).
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
 
 // subscriber wraps one WebTransport session's control + video streams.
 type subscriber struct {
