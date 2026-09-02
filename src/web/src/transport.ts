@@ -194,18 +194,38 @@ export class Transport {
         const { value: recv, done: sdone } = await streamReader.read()
         if (sdone) break
         if (!recv) continue
-        const reader = recv.readable.getReader()
-        while (true) {
-          const { value, done } = await reader.read()
-          if (done) break
-          if (!value) continue
-          this.rxBytes += value.byteLength
-          this.windowBytes += value.byteLength
-          this.videoHandler?.(value)
-        }
+        // Each value is a WebTransportReceiveStream, which *is* a ReadableStream.
+        // It has no `.readable` property: reaching for one throws a TypeError
+        // that the outer catch would swallow as "stream closed", leaving the
+        // control plane healthy while no video ever arrives.
+        void this.pumpVideoStream(recv as unknown as ReadableStream<Uint8Array>)
       }
     } catch {
       /* stream closed */
+    }
+  }
+
+  // Drained in its own task so a second video stream (after stop/start) is
+  // picked up promptly instead of waiting on the previous one to end.
+  private async pumpVideoStream(stream: ReadableStream<Uint8Array>): Promise<void> {
+    const reader = stream.getReader()
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        if (!value || value.byteLength === 0) continue
+        this.rxBytes += value.byteLength
+        this.windowBytes += value.byteLength
+        this.videoHandler?.(value)
+      }
+    } catch (err) {
+      if (!this.closed) console.warn('[transport] video stream error', err)
+    } finally {
+      try {
+        reader.releaseLock()
+      } catch {
+        /* already released */
+      }
     }
   }
 

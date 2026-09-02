@@ -41,12 +41,17 @@ export class InputController {
       this.send({ type: 'input', kind: 'mouse', dx: ev.movementX, dy: ev.movementY, buttons: ev.buttons })
     })
 
+    // Guarded on `locked` like mousemove/wheel/onKey: without this, the very
+    // click that acquires pointer lock also injects a button press and release
+    // on the remote host.
     this.on(target, 'mousedown', (e) => {
+      if (!this.locked) return
       const ev = e as MouseEvent
       this.send({ type: 'input', kind: 'mousedown', button: ev.button })
     })
 
     this.on(target, 'mouseup', (e) => {
+      if (!this.locked) return
       const ev = e as MouseEvent
       this.send({ type: 'input', kind: 'mouseup', button: ev.button })
     })

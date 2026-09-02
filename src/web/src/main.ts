@@ -7,6 +7,10 @@ import { StatsOverlay } from './ui/stats'
 import { toast } from './util'
 import type { ConnectPayload, ControlMessage, Display, InputMessage } from './types'
 
+// Frame rate requested from the agent. Also the decoder's timestamp base, so the
+// two must agree or presentation timestamps drift from real time.
+const REQUESTED_FPS = 60
+
 const connectEl = document.getElementById('connect')!
 const viewerEl = document.getElementById('viewer')!
 const canvas = document.getElementById('stage') as HTMLCanvasElement
@@ -59,7 +63,7 @@ function handleMessage(msg: ControlMessage): void {
 }
 
 function onStarted(msg: Extract<ControlMessage, { type: 'started' }>): void {
-  decoder.configure(msg.codec, msg.width, msg.height)
+  decoder.configure(msg.codec, msg.width, msg.height, REQUESTED_FPS)
   stats.update({ width: msg.width, height: msg.height })
   connectEl.classList.add('hidden')
   viewerEl.classList.remove('hidden')
@@ -114,7 +118,7 @@ const deps: ConnectDeps = {
         .catch(reject)
     }),
   startStream: (displayId: number) => {
-    transport.start(displayId)
+    transport.start(displayId, { fps: REQUESTED_FPS })
   },
   onConnected: (payload) => connectScreen.saveRecent(payload)
 }
