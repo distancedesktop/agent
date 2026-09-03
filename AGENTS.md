@@ -17,8 +17,8 @@ Reads BGRA from captured, GPU-encodes via ffmpeg, publishes over WebTransport/QU
 
 | Port | Transport | Purpose |
 |------|-----------|---------|
-| 52020 | UDP | WebTransport — `/wt` for JSON control, `/moq` for MoQ media (same QUIC conn) |
-| 52022 | TCP | Web UI (plain HTTP, fingerprint display) |
+| 52020 | UDP | WebTransport — `/wt` for JSON control + uni-stream media (QUIC over UDP) |
+| 52022 | TCP | Web UI (HTTPS, fingerprint display) |
 
 ### Protocol
 
@@ -37,14 +37,22 @@ JSON control messages (bidirectional stream):
 {"type":"fingerprint-refresh","algorithm":"sha-256","fingerprint":"<hex>"}  // sent on connect + cert rotation
 ```
 
-Video: 64KB chunks of H.264/H.265/AV1 Annex B byte stream over the unidirectional stream.
+`start` also accepts optional `codec` and `bitrate`.
 
-**Media over QUIC (MoQ)**: `https://<server>:52020/moq` — separate WebTransport session using `@moq/lite`.
-- gomoqt `WebTransportHandler` with `UpgradeFunc` wrapping via `okdaichi/webtransport-go`
-- `PublishFunc("/video", ...)` registers each subscriber's `TrackWriter`
-- Each ffmpeg chunk → one MoQ group → one frame
-- Old uni-stream model kept for backwards compat; MoQ runs alongside it.
-- gomoqt v0.15.0, falls back to IETF/moql mode (no ALPN h3/moq).
+On connect the agent pushes `fingerprint-refresh` (only when it manages its own
+cert) followed by an **unsolicited `displays`**, before the client asks for
+anything. Clients must tolerate `displays` arriving unprompted.
+
+Unrecognized message types are answered with
+`{"type":"error","message":"unknown type: <t>"}`. There is currently no `input`
+or `ping` handler.
+
+### Origin checks
+
+WT upgrades accept an empty `Origin`, an `Origin` matching the request `Host`,
+and the agent's own `https://<host>:<webPort>`. A viewer served from any other
+origin (reverse proxy, separate web deployment) is rejected unless that origin is
+passed with `--allow-origin`.
 
 ### Cert system
 
@@ -67,17 +75,7 @@ await transport.ready;
 const stream = await transport.createBidirectionalStream();
 ```
 
-MoQ video connection:
-```js
-const moqTransport = new WebTransport(`https://${ip}:52020/moq`, {
-  serverCertificateHashes: [{
-    algorithm: "sha-256",
-    value: new Uint8Array(fingerprintBytes)
-  }]
-});
-await moqTransport.ready;
-// Use @moq/lite to subscribe to "/video"
-```
+**Note**: MoQ integration has been removed. The agent now publishes video exclusively over WebTransport unidirectional streams (raw H.264 Annex B).
 
 ### Web UI
 
@@ -95,17 +93,26 @@ Embedded HTML at `http://<server>:52022/` showing:
 | `--fingerprint` | Print SHA-256 fingerprint and exit |
 | `--cert cert.pem` | Custom TLS certificate (ECDSA P-256 PEM) |
 | `--key key.pem` | Custom TLS private key (ECDSA P-256 PEM) |
+| `--backend auto\|captured\|sunshine\|vnc\|rdp` | Video backend (auto probes in order captured → sunshine → vnc → rdp) |
+| `--captured "source=...,device=..."` | captured backend opts (source/device for Spike B pipelines) |
+| `--sunshine "addr=host:47989"` | Sunshine/Moonlight host address |
+| `--vnc "addr=host:5901"` | VNC server address |
+| `--rdp "addr=host:3389"` | RDP server address |
+| `--allow-origin <origin>` | Additional allowed browser `Origin` for WT upgrades (repeatable; `*` allows any). Needed when the viewer is hosted somewhere other than the agent's own `:52022`, e.g. behind a reverse proxy. |
+| `--dry-run` | List displays via the selected backend and exit |
 
 ### Architecture
 
-```
-captured (Unix sockets)
-  └─ raw BGRA frames → agent
-                         ├─ ffmpeg (GPU encode via VideoToolbox/NVENC/AMF/QSV/VAAPI/libx264)
-                         │    └─ H.264/H.265/AV1 Annex B byte stream → stdout
-                         └─ publishStream goroutine
-                              ├─ writes 64KB chunks to each subscriber's unidirectional stream
-                              └─ writes each chunk as a MoQ frame/group to each MoQ TrackWriter
+```text
+backend.Backend { ListDisplays(ctx) ([]Display,error); StartStream(ctx, StartRequest) (Stream,error); Stream.Chunks() <-chan H264Chunk }   (src/backend/backend.go)
+  ├─ captured  — unix-socket daemon + ffmpeg encode (src/backend/captured.go)
+  ├─ sunshine  — Moonlight RTSP passthrough H264 (STUB, src/backend/sunshine.go)
+  ├─ vnc       — RFB frame polling (STUB, src/backend/vnc.go)
+  └─ rdp       — MS-RDPBCGR (STUB, src/backend/rdp.go)
+
+activeBackend (chosen via --backend at startup):
+  └─ StartStream → Stream.Chunks() channel
+       └─ publishStream goroutine writes each chunk to every subscriber's WT uni stream
 ```
 
 ### Start sequence
@@ -138,19 +145,21 @@ captured (Unix sockets)
 4. Client caches additional fingerprint
 5. On next connection, includes both old and new hashes in `serverCertificateHashes`
 
-## MoQ integration
+**Caveat:** the rotation broadcast only reaches sessions subscribed to a *live*
+stream — `broadcastControlMsg` returns early when no stream is active, and
+subscribers are only registered when a stream exists at connect time. A
+connected-but-idle client is not notified. The connect-time push in
+`handleSession` is unconditional.
 
-- `/moq` on same UDP port as `/wt` — separate WebTransport session using gomoqt.
-- Each MoQ subscriber gets a `*moqt.TrackWriter` via `PublishFunc("/video", ...)`.
-- `publishStream` writes each ffmpeg chunk to all `TrackWriter`s (one MoQ group + one frame per chunk).
-- On teardown, `moqBroadcastCancel()` unregisters the publish handler.
-- Server TLS `NextProtos` stays `["h3"]` — client MoQ WebTransport negotiates `h3`, `@moq/net` falls back to IETF/moql mode.
+**With `--cert`/`--key`** there is no cert manager at all: no fingerprint push,
+no rotation loop, and no web UI on `:52022`. That is the reverse-proxy /
+publicly-trusted-cert mode, where clients connect without
+`serverCertificateHashes`.
 
 ## Dependencies
 
-- `github.com/okdaichi/webtransport-go` — WebTransport over QUIC/HTTP-3 (fork used by gomoqt)
+- `github.com/okdaichi/webtransport-go` — WebTransport over QUIC/HTTP-3
 - `github.com/quic-go/quic-go` — QUIC transport layer
-- `github.com/qumo-dev/gomoqt` — Media over QUIC (MoQ) transport
 
 ## Build
 

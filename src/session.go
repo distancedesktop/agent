@@ -140,7 +140,10 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 				continue
 			}
 			stateMu.Lock()
-			w, h := state.width, state.height
+			var w, h int
+			if state != nil && state.stream != nil {
+				w, h = state.stream.Width(), state.stream.Height()
+			}
 			stateMu.Unlock()
 			log.Printf("session %s: stream started %dx%d", remote, w, h)
 			sendControlMsg(sub, map[string]any{
