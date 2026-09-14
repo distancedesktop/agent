@@ -125,7 +125,7 @@ func publishStream(ctx context.Context, ss *streamState) {
 	}
 }
 
-func writeFrame(w interface{ Write([]byte) (int, error) }, frame []byte) error {
+func writeFrame(w io.Writer, frame []byte) error {
 	for len(frame) > 0 {
 		n, err := w.Write(frame)
 		if err != nil {
