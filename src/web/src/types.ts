@@ -44,6 +44,12 @@ export type ServerMessage =
 
 export type ControlMessage = ServerMessage
 
+export interface VideoFrameRecord {
+  keyframe: boolean
+  timestampMs: number
+  data: Uint8Array
+}
+
 // Connect payload encoded in a QR / paste blob.
 export interface ConnectPayload {
   host: string

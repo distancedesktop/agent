@@ -37,6 +37,18 @@ JSON control messages (bidirectional stream):
 {"type":"fingerprint-refresh","algorithm":"sha-256","fingerprint":"<hex>"}  // sent on connect + cert rotation
 ```
 
+Video uni-stream records use one record per access unit:
+
+| Bytes | Description |
+|-------|-------------|
+| 1 | Flags; bit 0 is set when the access unit contains an IDR NAL |
+| 8 | Timestamp in milliseconds since the stream started, big-endian uint64 |
+| 4 | Access-unit payload length, big-endian uint32 |
+| N | Annex B access unit payload, including start codes |
+
+The client may receive records split across reads and must parse each complete
+record before decoding it.
+
 `start` also accepts optional `codec` and `bitrate`.
 
 On connect the agent pushes `fingerprint-refresh` (only when it manages its own
@@ -75,7 +87,7 @@ await transport.ready;
 const stream = await transport.createBidirectionalStream();
 ```
 
-**Note**: MoQ integration has been removed. The agent now publishes video exclusively over WebTransport unidirectional streams (raw H.264 Annex B).
+**Note**: MoQ integration has been removed. The agent now publishes video exclusively over WebTransport unidirectional streams using the framed H.264 format above.
 
 ### Web UI
 
