@@ -124,7 +124,7 @@ backend.Backend { ListDisplays(ctx) ([]Display,error); StartStream(ctx, StartReq
 
 activeBackend (chosen via --backend at startup):
   └─ StartStream → Stream.Chunks() channel
-       └─ publishStream goroutine writes each chunk to every subscriber's WT uni stream
+       └─ publishStream goroutine frames complete access units and writes records to every subscriber's WT uni stream
 ```
 
 ### Start sequence
@@ -133,7 +133,7 @@ activeBackend (chosen via --backend at startup):
 3. Captured returns media socket path → agent connects → reads first frame (header + data) for dimensions
 4. Agent spawns `ffmpeg` with correct `-s WxH`, writes first frame, starts BGRA reader goroutine for subsequent frames
 5. Agent opens unidirectional stream on the caller's session → adds caller as owner + subscriber
-6. ffmpeg stdout read in 64KB chunks → each chunk written to all subscriber unidirectional streams
+6. ffmpeg stdout read in 64KB chunks → chunks pass through the framer, and complete framed access-unit records are written to all subscriber unidirectional streams
 7. Agent responds to caller with `{"type":"started","width":...,"height":...,"codec":"h264"}`
 
 ### Stop sequence

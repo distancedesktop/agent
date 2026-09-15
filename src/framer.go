@@ -2,10 +2,13 @@ package main
 
 import "encoding/binary"
 
+const maxNALBytes = 8 << 20
+
 type framer struct {
 	buf     []byte
 	pending [][]byte
 	ready   [][]byte
+	dropped int
 }
 
 func (f *framer) Push(b []byte) [][]byte {
@@ -13,6 +16,11 @@ func (f *framer) Push(b []byte) [][]byte {
 	for {
 		nal, ok := f.nextNAL()
 		if !ok {
+			if len(f.buf) > maxNALBytes {
+				f.buf = nil
+				f.pending = nil
+				f.dropped++
+			}
 			break
 		}
 		f.ingestNAL(nal)

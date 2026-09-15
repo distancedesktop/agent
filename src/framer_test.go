@@ -87,3 +87,30 @@ func TestEncodeFrame(t *testing.T) {
 		t.Fatalf("frame = %x, want %x", got, want)
 	}
 }
+
+func TestFramerDropsOversizedNALAndResyncs(t *testing.T) {
+	var f framer
+	oversized := make([]byte, maxNALBytes+100)
+	copy(oversized, []byte{0, 0, 0, 1})
+	for i := 4; i < len(oversized); i++ {
+		oversized[i] = 0xff
+	}
+	if got := f.Push(oversized); len(got) != 0 {
+		t.Fatalf("oversized NAL emitted %d AUs", len(got))
+	}
+	if f.dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", f.dropped)
+	}
+
+	sps := []byte{0, 0, 0, 1, 0x67, 0x42, 0x00}
+	pps := []byte{0, 0, 1, 0x68, 0xce, 0x06}
+	idr := []byte{0, 0, 0, 1, 0x65, 0x88, 0x11}
+	nextSlice := []byte{0, 0, 1, 0x41, 0x9a, 0x22}
+	followingSlice := []byte{0, 0, 0, 1, 0x41, 0x9a, 0x33}
+	stream := append(append(append(append(append([]byte{}, sps...), pps...), idr...), nextSlice...), followingSlice...)
+	got := f.Push(stream)
+	want := append(append(append([]byte{}, sps...), pps...), idr...)
+	if len(got) != 1 || !bytes.Equal(got[0], want) {
+		t.Fatalf("resynced AUs = %x, want %x", got, [][]byte{want})
+	}
+}
