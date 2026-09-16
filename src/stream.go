@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
@@ -66,6 +67,7 @@ func startStream(displayID, fps int, codec string, bitrate int, caller *subscrib
 		stream:      stream,
 		subscribers: make(map[*subscriber]struct{}),
 		stopPub:     pubCancel,
+		streamStart: time.Now(),
 		owner:       caller,
 	}
 
@@ -85,14 +87,12 @@ func publishStream(ctx context.Context, ss *streamState) {
 		}
 		stateMu.Unlock()
 	}()
-	for chunk := range ss.stream.Chunks() {
-		if ctx.Err() != nil {
-			return
-		}
-
+	fr := &framer{}
+	publish := func(au []byte) {
+		frame := encodeFrame(boolToByte(keyframe(au)), uint64(time.Since(ss.streamStart).Milliseconds()), au)
 		ss.subMu.Lock()
+		defer ss.subMu.Unlock()
 		if ss.subscribers == nil {
-			ss.subMu.Unlock()
 			return
 		}
 		for sub := range ss.subscribers {
@@ -100,13 +100,50 @@ func publishStream(ctx context.Context, ss *streamState) {
 				continue
 			}
 			sub.video.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-			if _, err := sub.video.Write(chunk.Data); err != nil {
+			if err := writeFrame(sub.video, frame); err != nil {
 				sub.video.Close()
 				delete(ss.subscribers, sub)
 			}
 		}
-		ss.subMu.Unlock()
 	}
+	for chunk := range ss.stream.Chunks() {
+		if ctx.Err() != nil {
+			return
+		}
+		for _, au := range fr.Push(chunk.Data) {
+			if ctx.Err() != nil {
+				return
+			}
+			publish(au)
+		}
+	}
+	for _, au := range fr.Flush() {
+		if ctx.Err() != nil {
+			return
+		}
+		publish(au)
+	}
+}
+
+func writeFrame(w io.Writer, frame []byte) error {
+	for len(frame) > 0 {
+		n, err := w.Write(frame)
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrNoProgress
+		}
+		frame = frame[n:]
+	}
+	return nil
+}
+
+func boolToByte(v bool) byte {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func teardown() {

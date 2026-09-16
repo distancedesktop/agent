@@ -25,7 +25,7 @@ const input = new InputController((m: InputMessage) => transport.send(m))
 let pendingList: { resolve: (d: Display[]) => void; reject: (e: Error) => void } | null = null
 
 transport.onMessage((msg: ControlMessage) => handleMessage(msg))
-transport.setVideoHandler((chunk) => decoder.feed(chunk))
+transport.setVideoHandler((frame) => decoder.feedFrame(frame))
 transport.onStats((s) => stats.update({ bitrate: s.bitrate, rtt: s.rtt, online: transport.connected }))
 
 decoder.onFps = (fps) => stats.update({ fps })

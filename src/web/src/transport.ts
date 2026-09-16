@@ -1,4 +1,4 @@
-import type { ClientMessage, ServerMessage, ControlMessage } from './types'
+import type { ClientMessage, ServerMessage, ControlMessage, VideoFrameRecord } from './types'
 import { hexToBytes } from './util'
 
 export interface ConnectOptions {
@@ -15,14 +15,14 @@ export interface TransportStats {
 }
 
 type MessageHandler = (msg: ControlMessage) => void
-type VideoHandler = (chunk: Uint8Array) => void
+type VideoHandler = (frame: VideoFrameRecord) => void
 type StatsHandler = (stats: TransportStats) => void
 
 /**
  * WebTransport client for Distance Desktop.
  *
  * - One bidirectional stream carries newline-delimited JSON control messages.
- * - One unidirectional stream (server -> client) carries raw H264 Annex B video.
+ * - One unidirectional stream (server -> client) carries framed H264 access units.
  * - The server certificate hash is pinned via `serverCertificateHashes` so a
  *   self-signed agent cert is accepted without OS trust store involvement.
  */
@@ -209,6 +209,7 @@ export class Transport {
   // picked up promptly instead of waiting on the previous one to end.
   private async pumpVideoStream(stream: ReadableStream<Uint8Array>): Promise<void> {
     const reader = stream.getReader()
+    let buf = new Uint8Array(0)
     try {
       while (true) {
         const { value, done } = await reader.read()
@@ -216,7 +217,19 @@ export class Transport {
         if (!value || value.byteLength === 0) continue
         this.rxBytes += value.byteLength
         this.windowBytes += value.byteLength
-        this.videoHandler?.(value)
+        buf = concat(buf, value)
+        while (buf.length >= 13) {
+          const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+          const payloadLen = view.getUint32(9)
+          const recordLen = 13 + payloadLen
+          if (buf.length < recordLen) break
+          this.videoHandler?.({
+            keyframe: (buf[0] & 1) !== 0,
+            timestampMs: Number(view.getBigUint64(1)),
+            data: buf.slice(13, recordLen)
+          })
+          buf = buf.slice(recordLen)
+        }
       }
     } catch (err) {
       if (!this.closed) console.warn('[transport] video stream error', err)

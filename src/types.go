@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/okdaichi/webtransport-go"
 
@@ -35,6 +36,7 @@ type streamState struct {
 	subscribers map[*subscriber]struct{}
 	subMu       sync.Mutex
 	stopPub     context.CancelFunc
+	streamStart time.Time
 
 	owner *subscriber
 }

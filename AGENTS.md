@@ -37,6 +37,18 @@ JSON control messages (bidirectional stream):
 {"type":"fingerprint-refresh","algorithm":"sha-256","fingerprint":"<hex>"}  // sent on connect + cert rotation
 ```
 
+Video uni-stream records use one record per access unit:
+
+| Bytes | Description |
+|-------|-------------|
+| 1 | Flags; bit 0 is set when the access unit contains an IDR NAL |
+| 8 | Timestamp in milliseconds since the stream started, big-endian uint64 |
+| 4 | Access-unit payload length, big-endian uint32 |
+| N | Annex B access unit payload, including start codes |
+
+The client may receive records split across reads and must parse each complete
+record before decoding it.
+
 `start` also accepts optional `codec` and `bitrate`.
 
 On connect the agent pushes `fingerprint-refresh` (only when it manages its own
@@ -75,7 +87,7 @@ await transport.ready;
 const stream = await transport.createBidirectionalStream();
 ```
 
-**Note**: MoQ integration has been removed. The agent now publishes video exclusively over WebTransport unidirectional streams (raw H.264 Annex B).
+**Note**: MoQ integration has been removed. The agent now publishes video exclusively over WebTransport unidirectional streams using the framed H.264 format above.
 
 ### Web UI
 
@@ -112,7 +124,7 @@ backend.Backend { ListDisplays(ctx) ([]Display,error); StartStream(ctx, StartReq
 
 activeBackend (chosen via --backend at startup):
   └─ StartStream → Stream.Chunks() channel
-       └─ publishStream goroutine writes each chunk to every subscriber's WT uni stream
+       └─ publishStream goroutine frames complete access units and writes records to every subscriber's WT uni stream
 ```
 
 ### Start sequence
@@ -121,7 +133,7 @@ activeBackend (chosen via --backend at startup):
 3. Captured returns media socket path → agent connects → reads first frame (header + data) for dimensions
 4. Agent spawns `ffmpeg` with correct `-s WxH`, writes first frame, starts BGRA reader goroutine for subsequent frames
 5. Agent opens unidirectional stream on the caller's session → adds caller as owner + subscriber
-6. ffmpeg stdout read in 64KB chunks → each chunk written to all subscriber unidirectional streams
+6. ffmpeg stdout read in 64KB chunks → chunks pass through the framer, and complete framed access-unit records are written to all subscriber unidirectional streams
 7. Agent responds to caller with `{"type":"started","width":...,"height":...,"codec":"h264"}`
 
 ### Stop sequence
