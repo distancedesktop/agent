@@ -1,12 +1,9 @@
 package backend
 
-// Backend "captured": talks to the distancedesktop/captured unix-socket
-// daemon. Control channel speaks JSON requests/responses; the daemon hands
-// back a media socket carrying raw BGRA frames (8-byte big-endian
-// width/height header on the first frame, then per-frame headers), which we
-// pipe through ffmpeg to produce H.264 Annex B.
-//
-// The wire protocol is unchanged — existing captured daemons keep working.
+// Backend "captured": spawns distancedesktop/captured as a child process.
+// captured captures and encodes in one process. Control is JSON-RPC 2.0 on
+// its stdin/stdout, and encoded access units come back as records on fd 3
+// (see captured's README for the record layout).
 
 import (
 	"bufio"
@@ -17,362 +14,337 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
 	"os/exec"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
 
 func init() { Register(&CapturedBackend{}) }
 
-// CapturedBackend captures via the captured daemon + ffmpeg encode.
-type CapturedBackend struct{}
+// CapturedBackend runs captured as a child per stream.
+type CapturedBackend struct {
+	// Bin is the captured binary. Empty uses $CAPTURED_BIN, then "captured"
+	// from PATH.
+	Bin string
+	// Props are extra properties for start, e.g. "pipeline" or
+	// "video.encoder". Values are JSON.
+	Props map[string]json.RawMessage
+}
 
 func (b *CapturedBackend) Name() string { return "captured" }
 
-// SocketPath returns the captured control socket path.
-func (b *CapturedBackend) SocketPath() string {
-	if v := os.Getenv("CAPTURED_SOCKET"); v != "" {
+func (b *CapturedBackend) bin() string {
+	if b.Bin != "" {
+		return b.Bin
+	}
+	if v := os.Getenv("CAPTURED_BIN"); v != "" {
 		return v
 	}
-	return "/tmp/captured.socket"
+	return "captured"
 }
 
-type capturedDisplayResp struct {
-	Displays []struct {
-		ID          uint32  `json:"id"`
-		Width       int     `json:"width"`
-		Height      int     `json:"height"`
-		X           int     `json:"x"`
-		Y           int     `json:"y"`
-		RefreshRate float64 `json:"refresh_rate"`
-	} `json:"displays"`
-	Error string `json:"error,omitempty"`
+// child is one running captured process.
+type child struct {
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	media   *os.File
+	mu      sync.Mutex
+	id      int
+	wait    map[int]chan rpcReply
+	closed  bool
+	stopped chan string // stopped notifications
 }
 
-// ListDisplays queries the captured daemon over its unix control socket.
-func (b *CapturedBackend) ListDisplays(ctx context.Context) ([]Display, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", b.SocketPath())
+type rpcReply struct {
+	Result json.RawMessage
+	Err    error
+}
+
+func (b *CapturedBackend) spawn(withMedia bool) (*child, error) {
+	cmd := exec.Command(b.bin())
+	cmd.Stderr = os.Stderr
+	c := &child{cmd: cmd, wait: map[int]chan rpcReply{}, stopped: make(chan string, 1)}
+	var mw *os.File
+	if withMedia {
+		mr, w, err := os.Pipe()
+		if err != nil {
+			return nil, err
+		}
+		c.media, mw = mr, w
+		passMedia(cmd, mw)
+	}
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	c.stdin = stdin
+	if err := cmd.Start(); err != nil {
+		if c.media != nil {
+			c.media.Close()
+			mw.Close()
+		}
 		return nil, fmt.Errorf("captured: %w", err)
 	}
-	defer conn.Close()
-	enc := json.NewEncoder(conn)
-	dec := json.NewDecoder(conn)
-
-	log.Printf("captured: sending list-displays")
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
+	if mw != nil {
+		mw.Close()
 	}
-	if err := enc.Encode(map[string]string{"type": "list-displays"}); err != nil {
-		return nil, err
-	}
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
-	}
-	var resp capturedDisplayResp
-	if err := dec.Decode(&resp); err != nil {
-		log.Printf("captured: list-displays decode error: %v", err)
-		return nil, err
-	}
-	if resp.Error != "" {
-		log.Printf("captured: list-displays error: %s", resp.Error)
-		return nil, errors.New(resp.Error)
-	}
-	log.Printf("captured: got %d display(s)", len(resp.Displays))
-	out := make([]Display, len(resp.Displays))
-	for i, d := range resp.Displays {
-		log.Printf("captured: display[%d] id=%d %dx%d @ (x=%d,y=%d) %.2fhz", i, d.ID, d.Width, d.Height, d.X, d.Y, d.RefreshRate)
-		out[i] = Display{ID: d.ID, Width: d.Width, Height: d.Height, X: d.X, Y: d.Y, RefreshRate: d.RefreshRate}
-	}
-	return out, nil
+	go c.read(stdout)
+	return c, nil
 }
 
-// capturedStream implements Stream for the captured+ffmpeg pipeline.
+func (c *child) read(r io.Reader) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64<<10), 4<<20)
+	for sc.Scan() {
+		var m struct {
+			ID     *int            `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+			Result json.RawMessage `json:"result"`
+			Error  *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(sc.Bytes(), &m) != nil {
+			continue
+		}
+		if m.ID == nil {
+			if m.Method == "stopped" {
+				var p struct {
+					Error string `json:"error"`
+				}
+				json.Unmarshal(m.Params, &p)
+				select {
+				case c.stopped <- p.Error:
+				default:
+				}
+			}
+			continue
+		}
+		c.mu.Lock()
+		ch := c.wait[*m.ID]
+		delete(c.wait, *m.ID)
+		c.mu.Unlock()
+		if ch == nil {
+			continue
+		}
+		rep := rpcReply{Result: m.Result}
+		if m.Error != nil {
+			rep.Err = errors.New(m.Error.Message)
+		}
+		ch <- rep
+	}
+	c.mu.Lock()
+	c.closed = true
+	for id, ch := range c.wait {
+		ch <- rpcReply{Err: errors.New("captured exited")}
+		delete(c.wait, id)
+	}
+	c.mu.Unlock()
+}
+
+func (c *child) call(ctx context.Context, method string, params, out any) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return errors.New("captured exited")
+	}
+	c.id++
+	id := c.id
+	ch := make(chan rpcReply, 1)
+	c.wait[id] = ch
+	c.mu.Unlock()
+	msg, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+	if _, err := c.stdin.Write(append(msg, '\n')); err != nil {
+		return err
+	}
+	select {
+	case rep := <-ch:
+		if rep.Err != nil {
+			return fmt.Errorf("captured %s: %w", method, rep.Err)
+		}
+		if out != nil {
+			return json.Unmarshal(rep.Result, out)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// close ends the child: closing stdin makes captured exit; kill if it doesn't.
+func (c *child) close() {
+	c.stdin.Close()
+	done := make(chan struct{})
+	go func() { c.cmd.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		c.cmd.Process.Kill()
+		<-done
+	}
+	if c.media != nil {
+		c.media.Close()
+	}
+}
+
+// ListDisplays returns the displays of the first pipeline that works here,
+// which is the one captured picks with pipeline=auto.
+func (b *CapturedBackend) ListDisplays(ctx context.Context) ([]Display, error) {
+	c, err := b.spawn(false)
+	if err != nil {
+		return nil, err
+	}
+	defer c.close()
+	var res struct {
+		Pipelines []struct {
+			Name     string    `json:"name"`
+			Error    string    `json:"error"`
+			Displays []Display `json:"displays"`
+		} `json:"pipelines"`
+	}
+	if err := c.call(ctx, "list", nil, &res); err != nil {
+		return nil, err
+	}
+	var errs []error
+	for _, p := range res.Pipelines {
+		if p.Error != "" {
+			errs = append(errs, fmt.Errorf("%s: %s", p.Name, p.Error))
+			continue
+		}
+		log.Printf("captured: pipeline %s, %d display(s)", p.Name, len(p.Displays))
+		return p.Displays, nil
+	}
+	return nil, fmt.Errorf("captured: no pipeline works here: %w", errors.Join(errs...))
+}
+
+// capturedStream is one captured child streaming encoded video.
 type capturedStream struct {
-	req     StartRequest
-	width   int
-	height  int
-	ctrl    net.Conn
-	media   net.Conn
-	ffmpeg  *exec.Cmd
-	stdin   io.WriteCloser
-	chunks  chan H264Chunk
-	cancel  context.CancelFunc
-	closeMu sync.Mutex
-	closed  bool
+	c      *child
+	req    StartRequest
+	width  int
+	height int
+	codec  string
+	chunks chan H264Chunk
+	once   sync.Once
 }
 
 func (s *capturedStream) Chunks() <-chan H264Chunk { return s.chunks }
 func (s *capturedStream) Width() int               { return s.width }
 func (s *capturedStream) Height() int              { return s.height }
 func (s *capturedStream) FPS() int                 { return s.req.FPS }
-func (s *capturedStream) Codec() string            { return s.req.Codec }
+func (s *capturedStream) Codec() string            { return s.codec }
 
 func (s *capturedStream) Close() error {
-	s.closeMu.Lock()
-	defer s.closeMu.Unlock()
-	if s.closed {
-		return nil
-	}
-	s.closed = true
-	s.cancel()
-	if s.ffmpeg != nil && s.ffmpeg.Process != nil {
-		_ = s.ffmpeg.Process.Kill()
-	}
-	if s.stdin != nil {
-		s.stdin.Close()
-	}
-	if s.ffmpeg != nil {
-		done := make(chan struct{})
-		go func() { s.ffmpeg.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-		}
-	}
-	s.media.Close()
-	json.NewEncoder(s.ctrl).Encode(map[string]string{"type": "stop-stream"})
-	s.ctrl.Close()
+	s.once.Do(s.c.close)
 	return nil
 }
 
-// StartStream dials start-stream on the control socket, opens the media
-// socket, spawns ffmpeg and returns a chunk stream.
+// RequestKeyframe asks for an IDR on the next frame, for late joiners.
+func (s *capturedStream) RequestKeyframe() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.c.call(ctx, "set", map[string]any{"video.keyframe": true}, nil); err != nil {
+		log.Printf("captured: keyframe: %v", err)
+	}
+}
+
+// SetBitrate changes the target bitrate while streaming.
+func (s *capturedStream) SetBitrate(bps int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return s.c.call(ctx, "set", map[string]any{"video.bitrate": bps}, nil)
+}
+
+// StartStream spawns captured, starts capture+encode and forwards its access
+// units.
 func (b *CapturedBackend) StartStream(ctx context.Context, req StartRequest) (Stream, error) {
 	if req.FPS <= 0 {
 		req.FPS = 60
 	}
-	var d net.Dialer
-	ctrl, err := d.DialContext(ctx, "unix", b.SocketPath())
+	if req.Codec == "" {
+		req.Codec = "h264"
+	}
+	c, err := b.spawn(true)
 	if err != nil {
-		return nil, fmt.Errorf("captured control: %w", err)
+		return nil, err
 	}
-	enc := json.NewEncoder(ctrl)
-	dec := json.NewDecoder(ctrl)
-
-	log.Printf("captured: sending start-stream display=%d fps=%d", req.DisplayID, req.FPS)
-	if err := enc.Encode(map[string]any{
-		"type":       "start-stream",
-		"display_id": req.DisplayID,
-		"fps":        req.FPS,
-	}); err != nil {
-		ctrl.Close()
-		return nil, fmt.Errorf("start-stream: %w", err)
+	params := map[string]any{
+		"display":     req.DisplayID,
+		"video.fps":   req.FPS,
+		"video.codec": req.Codec,
 	}
-	var streamResp struct {
-		Type   string `json:"type"`
-		Socket string `json:"socket"`
-		Format string `json:"format"`
-		Error  string `json:"error,omitempty"`
+	if req.Bitrate > 0 {
+		params["video.bitrate"] = req.Bitrate
 	}
-	if err := dec.Decode(&streamResp); err != nil {
-		ctrl.Close()
-		return nil, fmt.Errorf("start-stream response: %w", err)
+	for k, v := range b.Props {
+		params[k] = v
 	}
-	if streamResp.Error != "" {
-		log.Printf("captured: start-stream error: %s", streamResp.Error)
-		ctrl.Close()
-		return nil, errors.New(streamResp.Error)
+	var res struct {
+		Pipeline string `json:"video.active_pipeline"`
+		Encoder  string `json:"video.active_encoder"`
+		HW       string `json:"video.hw"`
+		Size     [2]int `json:"video.size"`
 	}
-	log.Printf("captured: start-stream ok socket=%s format=%s", streamResp.Socket, streamResp.Format)
-
-	media, err := d.DialContext(ctx, "unix", streamResp.Socket)
-	if err != nil {
-		ctrl.Close()
-		return nil, fmt.Errorf("media socket: %w", err)
+	if err := c.call(ctx, "start", params, &res); err != nil {
+		c.close()
+		return nil, err
 	}
-
-	if deadline, ok := ctx.Deadline(); ok {
-		media.SetReadDeadline(deadline)
-	}
-
-	var hdr [8]byte
-	if _, err := io.ReadFull(media, hdr[:]); err != nil {
-		ctrl.Close()
-		media.Close()
-		return nil, fmt.Errorf("first frame header: %w", err)
-	}
-	w := int(binary.BigEndian.Uint32(hdr[0:4]))
-	h := int(binary.BigEndian.Uint32(hdr[4:8]))
-	const maxDim = 16384
-	if w <= 0 || h <= 0 || w > maxDim || h > maxDim {
-		ctrl.Close()
-		media.Close()
-		return nil, fmt.Errorf("first frame: invalid dimensions %dx%d", w, h)
-	}
-	const maxPixels = maxDim * maxDim
-	if int64(w)*int64(h) > maxPixels {
-		ctrl.Close()
-		media.Close()
-		return nil, fmt.Errorf("first frame: dimension overflow %dx%d", w, h)
-	}
-	log.Printf("captured: first frame %dx%d", w, h)
-	// handshake done — clear deadline for steady-state streaming reads
-	media.SetReadDeadline(time.Time{})
-	firstFrame := make([]byte, w*h*4)
-	if _, err := io.ReadFull(media, firstFrame); err != nil {
-		ctrl.Close()
-		media.Close()
-		return nil, fmt.Errorf("first frame data: %w", err)
-	}
-
-	encoder := probeEncoder()
-	args := buildFFmpegArgs(encoder, req, w, h)
-
-	cmd := exec.Command("ffmpeg", args...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		ctrl.Close()
-		media.Close()
-		return nil, fmt.Errorf("ffmpeg stdin: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
-		ctrl.Close()
-		media.Close()
-		return nil, fmt.Errorf("ffmpeg stdout: %w", err)
-	}
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		ctrl.Close()
-		media.Close()
-		return nil, fmt.Errorf("ffmpeg start: %w", err)
-	}
-	if _, err := stdin.Write(firstFrame); err != nil {
-		stdin.Close()
-		cmd.Wait()
-		ctrl.Close()
-		media.Close()
-		return nil, fmt.Errorf("write first frame: %w", err)
-	}
-	log.Printf("encoder: %s  %dx%d @ %dfps", encoder, w, h, req.FPS)
-
-	ctx2, cancel := context.WithCancel(context.Background())
+	log.Printf("captured: %s %dx%d@%d with %s (hw %q)", res.Pipeline, res.Size[0], res.Size[1], req.FPS, res.Encoder, res.HW)
 	s := &capturedStream{
+		c:      c,
 		req:    req,
-		width:  w,
-		height: h,
-		ctrl:   ctrl,
-		media:  media,
-		ffmpeg: cmd,
-		stdin:  stdin,
+		width:  res.Size[0],
+		height: res.Size[1],
+		codec:  req.Codec,
 		chunks: make(chan H264Chunk, 128),
-		cancel: cancel,
 	}
-
-	// BGRA frames -> ffmpeg stdin.
 	go func() {
-		var buf [8]byte
-		const maxDim = 16384
-		const maxPixels = maxDim * maxDim
-		for {
-			if _, err := io.ReadFull(media, buf[:]); err != nil {
-				break
-			}
-			fw := int(binary.BigEndian.Uint32(buf[0:4]))
-			fh := int(binary.BigEndian.Uint32(buf[4:8]))
-			if fw <= 0 || fh <= 0 || fw > maxDim || fh > maxDim || int64(fw)*int64(fh) > maxPixels {
-				log.Printf("captured: skipping invalid frame dimensions %dx%d", fw, fh)
-				break
-			}
-			frame := make([]byte, fw*fh*4)
-			if _, err := io.ReadFull(media, frame); err != nil {
-				break
-			}
-			if ctx2.Err() != nil {
-				break
-			}
-			if _, err := stdin.Write(frame); err != nil {
-				break
-			}
-		}
-		stdin.Close()
-	}()
-
-	// ffmpeg stdout -> chunks channel (Annex B already chunked by muxer).
-	go func() {
-		defer close(s.chunks)
-		r := bufio.NewReaderSize(stdout, 1<<16)
-		buf := make([]byte, 65536)
-		for ctx2.Err() == nil {
-			n, err := r.Read(buf)
-			if n > 0 {
-				chunk := make([]byte, n)
-				copy(chunk, buf[:n])
-				select {
-				case s.chunks <- H264Chunk{Data: chunk}:
-				case <-ctx2.Done():
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
+		if msg := <-c.stopped; msg != "" {
+			log.Printf("captured: stream stopped: %s", msg)
+			s.Close()
 		}
 	}()
-
+	go s.readMedia()
 	return s, nil
 }
 
-func buildFFmpegArgs(encoder string, req StartRequest, w, h int) []string {
-	args := []string{
-		"-y",
-		"-f", "rawvideo",
-		"-pix_fmt", "bgra",
-		"-s", fmt.Sprintf("%dx%d", w, h),
-		"-r", strconv.Itoa(req.FPS),
-		"-i", "pipe:0",
-		"-c:v", encoder,
-		"-pix_fmt", "yuv420p",
-	}
-	switch encoder {
-	case "h264_videotoolbox", "hevc_videotoolbox":
-		args = append(args, "-realtime", "true")
-	case "h264_nvenc":
-		args = append(args, "-preset", "p1", "-tune", "ull")
-	case "h264_amf":
-		args = append(args, "-usage", "ultralowlatency", "-quality", "speed")
-	case "h264_vaapi":
-		args = append(args, "-compression_level", "1")
-	case "h264_qsv":
-		args = append(args, "-preset", "veryfast")
-	}
-	switch req.Codec {
-	case "hevc":
-		args = append(args, "-f", "hevc")
-	case "av1":
-		args = append(args, "-f", "av1")
-	case "vp9":
-		args = append(args, "-f", "ivf")
-	default:
-		args = append(args, "-f", "h264")
-	}
-	if req.Bitrate > 0 {
-		args = append(args, "-b:v", strconv.Itoa(req.Bitrate))
-	}
-	args = append(args, "-")
-	return args
-}
+const (
+	recVideo  = 0
+	recFormat = 2
+	flagKey   = 1
+	maxRecord = 64 << 20
+)
 
-func probeEncoder() string {
-	out, err := exec.Command("ffmpeg", "-encoders").Output()
-	if err != nil {
-		return "libx264"
-	}
-	s := string(out)
-	prefs := []string{"h264_videotoolbox", "hevc_videotoolbox", "h264_nvenc", "h264_amf", "h264_qsv", "h264_vaapi"}
-	for _, name := range prefs {
-		if strings.Contains(s, name) {
-			return name
+// readMedia turns media records into chunks until captured goes away.
+func (s *capturedStream) readMedia() {
+	defer close(s.chunks)
+	defer s.Close()
+	r := bufio.NewReaderSize(s.c.media, 1<<20)
+	var hdr [16]byte
+	for {
+		if _, err := io.ReadFull(r, hdr[:]); err != nil {
+			return
+		}
+		n := binary.BigEndian.Uint32(hdr[0:])
+		if n > maxRecord {
+			log.Printf("captured: record of %d bytes, giving up", n)
+			return
+		}
+		buf := make([]byte, n)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return
+		}
+		switch hdr[4] {
+		case recFormat:
+			log.Printf("captured: format %s", buf)
+		case recVideo:
+			s.chunks <- H264Chunk{Data: buf, Keyframe: hdr[5]&flagKey != 0, AccessUnit: true}
 		}
 	}
-	return "libx264"
 }

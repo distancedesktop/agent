@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -45,6 +46,27 @@ func parseKV(s string) map[string]string {
 
 // configureBackends builds the concrete backends from flags.
 func configureBackends(o backendOpts) {
+	if o.captured != "" {
+		b, err := backend.Get("captured")
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		cb := b.(*backend.CapturedBackend)
+		for k, v := range parseKV(o.captured) {
+			if k == "bin" {
+				cb.Bin = v
+				continue
+			}
+			if !json.Valid([]byte(v)) {
+				q, _ := json.Marshal(v)
+				v = string(q)
+			}
+			if cb.Props == nil {
+				cb.Props = map[string]json.RawMessage{}
+			}
+			cb.Props[k] = json.RawMessage(v)
+		}
+	}
 	for _, entry := range []struct {
 		name string
 		opts string
@@ -103,7 +125,7 @@ func main() {
 
 	backendName := flag.String("backend", "auto", fmt.Sprintf("video backend: auto|%s", strings.Join(backend.Names(), "|")))
 	var bopts backendOpts
-	flag.StringVar(&bopts.captured, "captured", "", `captured backend opts: "source=kms,device=/dev/dri/card1"`)
+	flag.StringVar(&bopts.captured, "captured", "", `captured backend opts: "bin=/path/to/captured,pipeline=kms_nvidia,video.encoder=h264_nvenc" (any captured property)`)
 	flag.StringVar(&bopts.sunshine, "sunshine", "", `sunshine backend opts: "addr=127.0.0.1:47989"`)
 	flag.StringVar(&bopts.vnc, "vnc", "", `vnc backend opts: "addr=10.10.1.6:5901"`)
 	flag.StringVar(&bopts.rdp, "rdp", "", `rdp backend opts: "addr=10.10.1.6:3389"`)

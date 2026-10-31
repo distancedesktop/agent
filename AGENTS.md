@@ -2,16 +2,15 @@
 
 ## captured (../captured/)
 
-Dumb screen capture daemon. Unix sockets in `/tmp/`. No deps beyond Go stdlib.
+Capture and encode in one process. The agent spawns it per stream (and briefly for display listing). See `../captured/README.md` for the full protocol.
 
-- **Control**: `/tmp/captured.socket` — JSON over Unix socket. Commands: `list-displays`, `start-stream`, `stop-stream`, `info`.
-- **Media**: `/tmp/captured-media.socket` — raw BGRA frames: `[4B width][4B height][w*h*4 BGRA]`. Only active during a stream.
-- **Run**: `go run .` (optionally `--listen :9090` for TCP control).
-- **Pipeline interface**: `pipelines/pipeline.go`. Per-platform impls in `pipelines/{macos,linux,windows}/`. Only macOS done (uses `sckit-go` for ScreenCaptureKit).
+- **Control**: JSON-RPC 2.0 lines on captured's stdin/stdout. Methods `list`, `get`, `set`, `start`, `stop`, plus a `stopped` notification. Properties are generic keys like `video.bitrate`, `video.codec`, `video.encoder`, `stats.encode_avg_ms`.
+- **Media**: encoded records on fd 3 (an inherited handle passed with `--media fd:<handle>` on Windows): `[u32 BE len][u8 type][u8 flags][u16 0][u64 BE pts µs][payload]`. Type 0 is one access unit (flag bit 0 keyframe), type 2 is a format JSON.
+- **Build**: cgo with libavcodec/libavutil/libswscale dev packages. `kms_nvidia` needs `setcap cap_sys_admin+ep` on the binary.
 
 ## agent (this dir)
 
-Reads BGRA from captured, GPU-encodes via ffmpeg, publishes over WebTransport/QUIC.
+Spawns captured, forwards its encoded access units over WebTransport/QUIC.
 
 ### Ports
 
@@ -106,7 +105,7 @@ Embedded HTML at `http://<server>:52022/` showing:
 | `--cert cert.pem` | Custom TLS certificate (ECDSA P-256 PEM) |
 | `--key key.pem` | Custom TLS private key (ECDSA P-256 PEM) |
 | `--backend auto\|captured\|sunshine\|vnc\|rdp` | Video backend (auto probes in order captured → sunshine → vnc → rdp) |
-| `--captured "source=...,device=..."` | captured backend opts (source/device for Spike B pipelines) |
+| `--captured "bin=...,pipeline=...,video.encoder=..."` | captured binary (default `$CAPTURED_BIN`, then `captured` on PATH) and any captured properties to set on start |
 | `--sunshine "addr=host:47989"` | Sunshine/Moonlight host address |
 | `--vnc "addr=host:5901"` | VNC server address |
 | `--rdp "addr=host:3389"` | RDP server address |
@@ -117,7 +116,7 @@ Embedded HTML at `http://<server>:52022/` showing:
 
 ```text
 backend.Backend { ListDisplays(ctx) ([]Display,error); StartStream(ctx, StartRequest) (Stream,error); Stream.Chunks() <-chan H264Chunk }   (src/backend/backend.go)
-  ├─ captured  — unix-socket daemon + ffmpeg encode (src/backend/captured.go)
+  ├─ captured  — spawned captured child, capture + encode in one process (src/backend/captured.go)
   ├─ sunshine  — Moonlight RTSP passthrough H264 (STUB, src/backend/sunshine.go)
   ├─ vnc       — RFB frame polling (STUB, src/backend/vnc.go)
   └─ rdp       — MS-RDPBCGR (STUB, src/backend/rdp.go)
@@ -129,18 +128,18 @@ activeBackend (chosen via --backend at startup):
 
 ### Start sequence
 1. Client opens WebTransport session → opens bidirectional stream → sends `{"type":"start"}`
-2. Agent dials `/tmp/captured.socket` → sends `start-stream`
-3. Captured returns media socket path → agent connects → reads first frame (header + data) for dimensions
-4. Agent spawns `ffmpeg` with correct `-s WxH`, writes first frame, starts BGRA reader goroutine for subsequent frames
-5. Agent opens unidirectional stream on the caller's session → adds caller as owner + subscriber
-6. ffmpeg stdout read in 64KB chunks → chunks pass through the framer, and complete framed access-unit records are written to all subscriber unidirectional streams
-7. Agent responds to caller with `{"type":"started","width":...,"height":...,"codec":"h264"}`
+2. Agent spawns captured with a pipe on fd 3 → sends JSON-RPC `start` with display, fps, codec and bitrate (plus `--captured` properties)
+3. captured replies with every property, including `video.size` and `video.active_encoder`
+4. Agent opens unidirectional stream on the caller's session → adds caller as owner + subscriber
+5. Each video record on fd 3 is one access unit; it goes straight into a framed record for every subscriber's unidirectional stream (no framer pass)
+6. Agent responds to caller with `{"type":"started","width":...,"height":...,"codec":"h264"}`
 
 ### Stop sequence
-1. Any client sends `{"type":"stop"}` → cancel publish context → close ffmpeg stdin (EOF) → `cmd.Wait()`
-2. Close media socket → send `stop-stream` to captured → close control socket
-3. Send `{"type":"stream-ended"}` to all subscribers → close all sessions
-4. Set `state = nil`
+1. Any client sends `{"type":"stop"}` → cancel publish context → close captured's stdin, which makes it stop and exit (killed after 2 s)
+2. Send `{"type":"stream-ended"}` to all subscribers → close all sessions
+3. Set `state = nil`
+
+A `stopped` notification from captured (capture or encoder failure) tears the stream down the same way.
 
 ### Owner disconnect
 - If the client that started the stream disconnects, stream is torn down automatically
@@ -148,7 +147,7 @@ activeBackend (chosen via --backend at startup):
 
 ### Late joiners
 - Clients connecting while a stream is active are auto-registered as subscribers (no video until they send `start`)
-- On `start`, agent opens a unidirectional stream on their session for video
+- On `start`, agent opens a unidirectional stream on their session for video and asks captured for a keyframe (`video.keyframe`), since captured only sends IDRs on request by default
 
 ### Fingerprint refresh flow
 1. Cert rotation goroutine detects < 7 days remaining

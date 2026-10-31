@@ -26,6 +26,9 @@ func startStream(displayID, fps int, codec string, bitrate int, caller *subscrib
 		state.subMu.Lock()
 		state.subscribers[caller] = struct{}{}
 		state.subMu.Unlock()
+		if kr, ok := state.stream.(backend.KeyframeRequester); ok {
+			kr.RequestKeyframe()
+		}
 		log.Printf("startStream: late-join complete, now %d subscriber(s)", len(state.subscribers))
 		return nil
 	}
@@ -88,8 +91,8 @@ func publishStream(ctx context.Context, ss *streamState) {
 		stateMu.Unlock()
 	}()
 	fr := &framer{}
-	publish := func(au []byte) {
-		frame := encodeFrame(boolToByte(keyframe(au)), uint64(time.Since(ss.streamStart).Milliseconds()), au)
+	publish := func(au []byte, key bool) {
+		frame := encodeFrame(boolToByte(key), uint64(time.Since(ss.streamStart).Milliseconds()), au)
 		ss.subMu.Lock()
 		defer ss.subMu.Unlock()
 		if ss.subscribers == nil {
@@ -110,18 +113,22 @@ func publishStream(ctx context.Context, ss *streamState) {
 		if ctx.Err() != nil {
 			return
 		}
+		if chunk.AccessUnit {
+			publish(chunk.Data, chunk.Keyframe)
+			continue
+		}
 		for _, au := range fr.Push(chunk.Data) {
 			if ctx.Err() != nil {
 				return
 			}
-			publish(au)
+			publish(au, keyframe(au))
 		}
 	}
 	for _, au := range fr.Flush() {
 		if ctx.Err() != nil {
 			return
 		}
-		publish(au)
+		publish(au, keyframe(au))
 	}
 }
 
