@@ -24,6 +24,7 @@ func startStream(displayID, fps int, codec string, bitrate int, caller *subscrib
 		}
 		caller.video = videoStream
 		state.subMu.Lock()
+		caller.needKey = true
 		state.subscribers[caller] = struct{}{}
 		state.subMu.Unlock()
 		if kr, ok := state.stream.(backend.KeyframeRequester); ok {
@@ -101,6 +102,12 @@ func publishStream(ctx context.Context, ss *streamState) {
 		for sub := range ss.subscribers {
 			if sub.video == nil {
 				continue
+			}
+			if sub.needKey {
+				if !key {
+					continue
+				}
+				sub.needKey = false
 			}
 			sub.video.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
 			if err := writeFrame(sub.video, frame); err != nil {

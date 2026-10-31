@@ -146,6 +146,7 @@ func (c *child) read(r io.Reader) {
 		delete(c.wait, id)
 	}
 	c.mu.Unlock()
+	close(c.stopped)
 }
 
 func (c *child) call(ctx context.Context, method string, params, out any) error {
@@ -231,6 +232,7 @@ type capturedStream struct {
 	height int
 	codec  string
 	chunks chan H264Chunk
+	done   chan struct{}
 	once   sync.Once
 }
 
@@ -241,7 +243,10 @@ func (s *capturedStream) FPS() int                 { return s.req.FPS }
 func (s *capturedStream) Codec() string            { return s.codec }
 
 func (s *capturedStream) Close() error {
-	s.once.Do(s.c.close)
+	s.once.Do(func() {
+		close(s.done)
+		s.c.close()
+	})
 	return nil
 }
 
@@ -303,6 +308,7 @@ func (b *CapturedBackend) StartStream(ctx context.Context, req StartRequest) (St
 		height: res.Size[1],
 		codec:  req.Codec,
 		chunks: make(chan H264Chunk, 128),
+		done:   make(chan struct{}),
 	}
 	go func() {
 		if msg := <-c.stopped; msg != "" {
@@ -344,7 +350,11 @@ func (s *capturedStream) readMedia() {
 		case recFormat:
 			log.Printf("captured: format %s", buf)
 		case recVideo:
-			s.chunks <- H264Chunk{Data: buf, Keyframe: hdr[5]&flagKey != 0, AccessUnit: true}
+			select {
+			case s.chunks <- H264Chunk{Data: buf, Keyframe: hdr[5]&flagKey != 0, AccessUnit: true}:
+			case <-s.done:
+				return
+			}
 		}
 	}
 }
