@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -167,6 +168,8 @@ func TestAuthenticatedViewerStreams(t *testing.T) {
 			if _, err := ctrl.Write([]byte(`{"type":"start","display_id":0}` + "\n")); err != nil {
 				t.Fatal(err)
 			}
+			deadline, _ := ctx.Deadline()
+			ctrl.SetReadDeadline(deadline)
 			msgs := bufio.NewScanner(ctrl)
 			var started bool
 			for !started && msgs.Scan() {
@@ -184,6 +187,7 @@ func TestAuthenticatedViewerStreams(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			video.SetReadDeadline(deadline)
 			var hdr [13]byte
 			if _, err := io.ReadFull(video, hdr[:]); err != nil {
 				t.Fatalf("read video record: %v", err)
@@ -229,6 +233,15 @@ func TestLoadOrCreateToken(t *testing.T) {
 	os.WriteFile(short, []byte("abc\n"), 0o600)
 	if _, err := loadOrCreateToken(short); err == nil {
 		t.Fatal("accepted a too-short token")
+	}
+
+	if runtime.GOOS != "windows" {
+		loose := filepath.Join(t.TempDir(), "loose")
+		os.WriteFile(loose, []byte("0123456789abcdef0123\n"), 0o644)
+		os.Chmod(loose, 0o644)
+		if _, err := loadOrCreateToken(loose); err == nil {
+			t.Fatal("accepted a group/world-readable token file")
+		}
 	}
 	if _, err := loadOrCreateToken(t.TempDir()); err == nil || errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("directory as token file: got %v", err)
