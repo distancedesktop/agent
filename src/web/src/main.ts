@@ -101,7 +101,7 @@ window.addEventListener('keydown', (e) => {
 const deps: ConnectDeps = {
   connectAndList: (payload: ConnectPayload) =>
     new Promise<Display[]>((resolve, reject) => {
-      const url = wtUrl(payload.host, payload.port ?? 52020)
+      const url = wtUrl(payload.host, payload.port ?? 52020, payload.token)
       transport
         .connect({ url, fingerprintHex: payload.fingerprint })
         .then(() => {

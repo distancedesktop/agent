@@ -59,6 +59,17 @@ Unrecognized message types are answered with
 `{"type":"error","message":"unknown type: <t>"}`. There is currently no `input`
 or `ping` handler.
 
+### Viewer token
+
+Every `/wt` upgrade must carry the agent's viewer token, or it is refused with
+401 before any session exists. Browsers cannot set headers on a WebTransport
+CONNECT, so viewers send it as a query parameter (`/wt?token=<token>`);
+non-browser clients may send `Authorization: Bearer <token>` instead. The token
+is generated on first run into `<config dir>/viewer-token` (mode 0600, override
+with `--token-file`) and shown with `--print-token`. Rotate it by replacing the
+file and restarting. Origin checks and cert pinning do not authenticate viewers;
+this token does.
+
 ### Origin checks
 
 WT upgrades accept an empty `Origin`, an `Origin` matching the request `Host`,
@@ -111,6 +122,8 @@ Embedded HTML at `http://<server>:52022/` showing:
 | `--vnc "addr=host:5901"` | VNC server address |
 | `--rdp "addr=host:3389"` | RDP server address |
 | `--allow-origin <origin>` | Additional allowed browser `Origin` for WT upgrades (repeatable; `*` allows any). Needed when the viewer is hosted somewhere other than the agent's own `:52022`, e.g. behind a reverse proxy. |
+| `--token-file <path>` | Viewer token file; generated on first run (default `<config dir>/viewer-token`) |
+| `--print-token` | Print the viewer token and exit |
 | `--dry-run` | List displays via the selected backend and exit |
 
 ### Architecture

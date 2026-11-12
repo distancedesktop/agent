@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -72,6 +73,29 @@ func configureBackends(o backendOpts) {
 	}
 }
 
+// wtHandler upgrades /wt requests that carry the viewer token. The check runs
+// before Upgrade so an unauthenticated viewer gets a plain 401 and never sees a
+// session, the display list or video.
+func wtHandler(up *webtransport.Upgrader, cm *certManager, token string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		remote := r.RemoteAddr
+		log.Printf("WT upgrade request from %s", remote)
+		if !authorized(r, token) {
+			log.Printf("WT upgrade rejected from %s: missing or invalid viewer token", remote)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		s, err := up.Upgrade(w, r)
+		if err != nil {
+			log.Printf("WT upgrade failed from %s: %v", remote, err)
+			w.WriteHeader(400)
+			return
+		}
+		log.Printf("WT upgrade succeeded from %s", remote)
+		go handleSession(s, cm)
+	}
+}
+
 // selectBackend resolves the requested backend, probing candidates in auto order.
 func selectBackend(name string) backend.Backend {
 	if name == "" || name == "auto" {
@@ -110,7 +134,21 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "list displays via the selected backend and exit")
 	var allowOrigins stringList
 	flag.Var(&allowOrigins, "allow-origin", "additional allowed browser Origin for WebTransport upgrades (repeatable, e.g. https://distance.example.com); \"*\" allows any")
+	tokenFile := flag.String("token-file", "", "viewer token file; generated on first run (default <config dir>/viewer-token)")
+	printToken := flag.Bool("print-token", false, "print the viewer token and exit")
 	flag.Parse()
+
+	if *tokenFile == "" {
+		*tokenFile = filepath.Join(configDir(), "viewer-token")
+	}
+	viewerToken, err := loadOrCreateToken(*tokenFile)
+	if err != nil {
+		log.Fatalf("viewer token: %v", err)
+	}
+	if *printToken {
+		fmt.Println(viewerToken)
+		return
+	}
 
 	configureBackends(bopts)
 	sel := selectBackend(*backendName)
@@ -200,22 +238,12 @@ func main() {
 
 	wtMux := http.NewServeMux()
 
-	wtMux.HandleFunc("/wt", func(w http.ResponseWriter, r *http.Request) {
-		remote := r.RemoteAddr
-		log.Printf("WT upgrade request from %s", remote)
-		s, err := wtUpgrader.Upgrade(w, r)
-		if err != nil {
-			log.Printf("WT upgrade failed from %s: %v", remote, err)
-			w.WriteHeader(400)
-			return
-		}
-		log.Printf("WT upgrade succeeded from %s", remote)
-		go handleSession(s, cm)
-	})
+	wtMux.HandleFunc("/wt", wtHandler(wtUpgrader, cm, viewerToken))
 
 	wtServer.H3.Handler = wtMux
 
 	log.Printf("local IPs: %v", localIPs())
+	log.Printf("viewers must present the token in %s (show it with --print-token)", *tokenFile)
 
 	udpAddr, err := net.ResolveUDPAddr("udp", *addr)
 	if err != nil {
