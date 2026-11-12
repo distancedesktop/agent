@@ -109,6 +109,7 @@ body {
 
 input[type="text"],
 input[type="number"],
+input[type="password"],
 textarea {
   width: 100%;
   background: var(--bg-elev-2);
