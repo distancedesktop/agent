@@ -37,16 +37,7 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 	defer func() {
 		stream.Close()
 		stateMu.Lock()
-		if state != nil {
-			state.subMu.Lock()
-			delete(state.subscribers, sub)
-			isOwner := state.owner == sub
-			state.subMu.Unlock()
-			if isOwner {
-				log.Printf("session %s: owner disconnected, tearing down stream", remote)
-				teardown()
-			}
-		}
+		leaveStream(sub)
 		stateMu.Unlock()
 		log.Printf("session %s: closed", remote)
 	}()
@@ -154,11 +145,9 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 			})
 
 		case "stop":
-			log.Printf("session %s: stopping stream", remote)
+			log.Printf("session %s: stop requested", remote)
 			stateMu.Lock()
-			if state != nil {
-				teardown()
-			}
+			leaveStream(sub)
 			stateMu.Unlock()
 			sendControlMsg(sub, map[string]string{"type": "stopped"})
 
@@ -166,6 +155,36 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 			log.Printf("session %s: unknown message type: %s", remote, req.Type)
 			sendControlMsg(sub, map[string]string{"type": "error", "message": fmt.Sprintf("unknown type: %s", req.Type)})
 		}
+	}
+}
+
+// leaveStream detaches sub from the active stream. The stream is torn down
+// for everyone else only when sub owns it or was its last subscriber.
+// sub is removed before any teardown so teardown never writes to a session
+// that is already gone. Caller must hold stateMu.
+func leaveStream(sub *subscriber) {
+	if state == nil {
+		return
+	}
+	remote := sub.sess.RemoteAddr()
+	state.subMu.Lock()
+	_, subscribed := state.subscribers[sub]
+	delete(state.subscribers, sub)
+	if sub.video != nil {
+		sub.video.Close()
+		sub.video = nil
+	}
+	remaining := len(state.subscribers)
+	state.subMu.Unlock()
+	switch {
+	case state.owner == sub:
+		log.Printf("session %s: owner left, tearing down stream", remote)
+		teardown()
+	case subscribed && remaining == 0:
+		log.Printf("session %s: last subscriber left, tearing down stream", remote)
+		teardown()
+	case subscribed:
+		log.Printf("session %s: left stream, %d subscriber(s) remain", remote, remaining)
 	}
 }
 

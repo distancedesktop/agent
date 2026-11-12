@@ -33,7 +33,7 @@ JSON control messages (bidirectional stream):
 {"type":"list-displays"} → {"type":"displays","displays":[...]}
 {"type":"start","display_id":0,"fps":60} → {"type":"started","width":1920,"height":1080,"codec":"h264"}
 {"type":"stop"} → {"type":"stopped"}
-{"type":"stream-ended"}  // sent to all subscribers on stop
+{"type":"stream-ended"}  // sent to the other subscribers when the owner stops or leaves
 {"type":"fingerprint-refresh","algorithm":"sha-256","fingerprint":"<hex>"}  // sent on connect + cert rotation
 ```
 
@@ -143,8 +143,8 @@ activeBackend (chosen via --backend at startup):
 4. Set `state = nil`
 
 ### Owner disconnect
-- If the client that started the stream disconnects, stream is torn down automatically
-- All subscribers receive `stream-ended`
+- If the client that started the stream (the owner) sends `stop` or disconnects, the stream is torn down and the other subscribers receive `stream-ended`
+- A `stop` or disconnect from any other subscriber only closes that subscriber's video stream; the stream keeps running for the rest, unless no subscribers remain
 
 ### Late joiners
 - Clients connecting while a stream is active are auto-registered as subscribers (no video until they send `start`)
