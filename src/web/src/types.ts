@@ -55,5 +55,6 @@ export interface ConnectPayload {
   host: string
   port?: number
   fingerprint: string
+  token: string
   label?: string
 }

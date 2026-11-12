@@ -7,6 +7,7 @@ export interface RecentHost {
   host: string
   port: number
   fingerprint: string
+  token?: string
   label?: string
   last: number
 }
@@ -30,6 +31,7 @@ export class ConnectScreen {
   private fpInput!: HTMLTextAreaElement
   private hostInput!: HTMLInputElement
   private portInput!: HTMLInputElement
+  private tokenInput!: HTMLInputElement
   private labelInput!: HTMLInputElement
   private connectBtn!: HTMLButtonElement
   private qrStream: MediaStream | null = null
@@ -75,6 +77,15 @@ export class ConnectScreen {
     portField.append(this.portInput)
     row.append(hostField, portField)
 
+    const tokenField = el('div', { class: 'field' }, [el('label', { text: 'Viewer token' })])
+    this.tokenInput = el('input', {
+      type: 'password',
+      placeholder: 'run the agent with --print-token to show it',
+      autocomplete: 'off',
+      spellcheck: 'false'
+    }) as HTMLInputElement
+    tokenField.append(this.tokenInput)
+
     const labelField = el('div', { class: 'field' }, [el('label', { text: 'Label (optional)' })])
     this.labelInput = el('input', { type: 'text', placeholder: 'living room pc' }) as HTMLInputElement
     labelField.append(this.labelInput)
@@ -90,13 +101,13 @@ export class ConnectScreen {
       el('label', { text: '…or paste a connection JSON' })
     ])
     const pasteArea = el('textarea', {
-      placeholder: '{"host":"10.10.1.5","port":52020,"fingerprint":"abcd…","label":"pc"}',
+      placeholder: '{"host":"10.10.1.5","port":52020,"fingerprint":"abcd…","token":"…","label":"pc"}',
       spellcheck: 'false'
     }) as HTMLTextAreaElement
     pasteArea.addEventListener('change', () => this.applyJson(pasteArea.value))
     pasteJson.append(pasteArea)
 
-    card.append(fpField, row, labelField, actions, pasteJson)
+    card.append(fpField, row, tokenField, labelField, actions, pasteJson)
 
     // Recent hosts
     const recent = this.loadRecent()
@@ -121,6 +132,7 @@ export class ConnectScreen {
           this.fpInput.value = h.fingerprint
           this.hostInput.value = h.host
           this.portInput.value = String(h.port)
+          this.tokenInput.value = h.token ?? ''
           if (h.label) this.labelInput.value = h.label
         })
         list.append(item)
@@ -156,6 +168,7 @@ export class ConnectScreen {
     const fingerprint = this.fpInput.value.trim().replace(/\s+/g, '')
     const host = this.hostInput.value.trim()
     const port = parseInt(this.portInput.value.trim(), 10) || 52020
+    const token = this.tokenInput.value.trim()
     const label = this.labelInput.value.trim() || undefined
 
     if (!/^[0-9a-fA-F]{64}$/.test(fingerprint)) {
@@ -166,13 +179,18 @@ export class ConnectScreen {
       toast('Enter the agent host', 'err')
       return
     }
+    if (!token) {
+      toast('Enter the agent viewer token', 'err')
+      return
+    }
 
     this.connectBtn.disabled = true
     this.connectBtn.textContent = 'Connecting…'
     try {
-      const displays = await this.deps.connectAndList({ host, port, fingerprint, label })
-      this.deps.onConnected?.({ host, port, fingerprint, label })
-      this.showDisplays(displays, { host, port, fingerprint, label })
+      const payload: ConnectPayload = { host, port, fingerprint, token, label }
+      const displays = await this.deps.connectAndList(payload)
+      this.deps.onConnected?.(payload)
+      this.showDisplays(displays, payload)
     } catch (e) {
       toast(`Connection failed: ${(e as Error).message}`, 'err')
       this.connectBtn.disabled = false
@@ -229,6 +247,10 @@ export class ConnectScreen {
       toast('Invalid connection JSON: port must be number', 'err')
       return false
     }
+    if (p.token !== undefined && typeof p.token !== 'string') {
+      toast('Invalid connection JSON: token must be string', 'err')
+      return false
+    }
     if (p.label !== undefined && typeof p.label !== 'string') {
       toast('Invalid connection JSON: label must be string', 'err')
       return false
@@ -236,6 +258,7 @@ export class ConnectScreen {
     if (p.fingerprint) this.fpInput.value = p.fingerprint
     if (p.host) this.hostInput.value = p.host
     if (p.port) this.portInput.value = String(p.port)
+    if (p.token) this.tokenInput.value = p.token
     if (p.label) this.labelInput.value = p.label
     toast('Filled from JSON', 'ok')
     return true
@@ -322,6 +345,7 @@ export class ConnectScreen {
         host: payload.host,
         port: payload.port ?? 52020,
         fingerprint: payload.fingerprint,
+        token: payload.token,
         label: payload.label,
         last: Date.now()
       })

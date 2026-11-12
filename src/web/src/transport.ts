@@ -272,7 +272,9 @@ function findNL(buf: Uint8Array): number {
  * Build the WebTransport URL from a host + port. WebTransport uses the `https`
  * scheme and H3, so we always normalize to https://host:port/wt.
  */
-export function wtUrl(host: string, port: number): string {
+// The agent rejects upgrades without its viewer token. Browsers cannot set
+// headers on a WebTransport CONNECT, so it travels as a query parameter.
+export function wtUrl(host: string, port: number, token: string): string {
   const h = host.replace(/^https?:\/\//, '').replace(/\/$/, '')
-  return `https://${h}:${port}/wt`
+  return `https://${h}:${port}/wt?token=${encodeURIComponent(token)}`
 }
