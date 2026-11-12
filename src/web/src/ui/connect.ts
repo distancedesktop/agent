@@ -258,7 +258,7 @@ export class ConnectScreen {
     if (p.fingerprint) this.fpInput.value = p.fingerprint
     if (p.host) this.hostInput.value = p.host
     if (p.port) this.portInput.value = String(p.port)
-    if (p.token) this.tokenInput.value = p.token
+    this.tokenInput.value = p.token ?? ''
     if (p.label) this.labelInput.value = p.label
     toast('Filled from JSON', 'ok')
     return true

@@ -87,8 +87,9 @@ passed with `--allow-origin`.
 - No CA chain, no `security add-trusted-cert` needed
 
 ### Client connection (browser JavaScript)
+`token` is the viewer token (`distance-agent --print-token`).
 ```js
-const transport = new WebTransport(`https://${ip}:52020/wt`, {
+const transport = new WebTransport(`https://${ip}:52020/wt?token=${encodeURIComponent(token)}`, {
   serverCertificateHashes: [{
     algorithm: "sha-256",
     value: new Uint8Array(fingerprintBytes)

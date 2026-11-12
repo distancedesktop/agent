@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -23,6 +24,15 @@ func loadOrCreateToken(path string) (string, error) {
 		tok := strings.TrimSpace(string(b))
 		if len(tok) < minTokenLen {
 			return "", fmt.Errorf("token file %s: token must be at least %d characters", path, minTokenLen)
+		}
+		if runtime.GOOS != "windows" {
+			fi, err := os.Stat(path)
+			if err != nil {
+				return "", err
+			}
+			if fi.Mode().Perm()&0o077 != 0 {
+				return "", fmt.Errorf("token file %s: mode %04o is readable by other users; chmod 600 it", path, fi.Mode().Perm())
+			}
 		}
 		return tok, nil
 	}
