@@ -105,7 +105,7 @@ Embedded HTML at `http://<server>:52022/` showing:
 | `--cert cert.pem` | Custom TLS certificate (ECDSA P-256 PEM) |
 | `--key key.pem` | Custom TLS private key (ECDSA P-256 PEM) |
 | `--backend auto\|captured\|sunshine\|vnc\|rdp` | Video backend (auto probes in order captured → sunshine → vnc → rdp) |
-| `--captured "bin=...,pipeline=...,video.encoder=..."` | captured binary (default `$CAPTURED_BIN`, then `captured` on PATH) and any captured properties to set on start |
+| `--captured "bin=...,pipeline=...,video.encoder=..."` | captured binary (default `$CAPTURED_BIN`, then `captured` on PATH) and any captured properties to set on start, except `video.codec`, which comes from the client's `start` (the viewer only decodes H.264). `pipeline` also picks which pipeline's displays are listed |
 | `--sunshine "addr=host:47989"` | Sunshine/Moonlight host address |
 | `--vnc "addr=host:5901"` | VNC server address |
 | `--rdp "addr=host:3389"` | RDP server address |

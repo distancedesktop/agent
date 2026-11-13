@@ -125,7 +125,7 @@ func main() {
 
 	backendName := flag.String("backend", "auto", fmt.Sprintf("video backend: auto|%s", strings.Join(backend.Names(), "|")))
 	var bopts backendOpts
-	flag.StringVar(&bopts.captured, "captured", "", `captured backend opts: "bin=/path/to/captured,pipeline=kms_nvidia,video.encoder=h264_nvenc" (any captured property)`)
+	flag.StringVar(&bopts.captured, "captured", "", `captured backend opts: "bin=/path/to/captured,pipeline=kms_nvidia,video.encoder=h264_nvenc" (any captured property except video.codec)`)
 	flag.StringVar(&bopts.sunshine, "sunshine", "", `sunshine backend opts: "addr=127.0.0.1:47989"`)
 	flag.StringVar(&bopts.vnc, "vnc", "", `vnc backend opts: "addr=10.10.1.6:5901"`)
 	flag.StringVar(&bopts.rdp, "rdp", "", `rdp backend opts: "addr=10.10.1.6:3389"`)

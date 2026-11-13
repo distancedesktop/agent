@@ -194,8 +194,9 @@ func (c *child) close() {
 	}
 }
 
-// ListDisplays returns the displays of the first pipeline that works here,
-// which is the one captured picks with pipeline=auto.
+// ListDisplays returns the displays of the configured pipeline, or with
+// pipeline=auto of the first one that works here, which is the one captured
+// picks.
 func (b *CapturedBackend) ListDisplays(ctx context.Context) ([]Display, error) {
 	c, err := b.spawn(false)
 	if err != nil {
@@ -212,16 +213,35 @@ func (b *CapturedBackend) ListDisplays(ctx context.Context) ([]Display, error) {
 	if err := c.call(ctx, "list", nil, &res); err != nil {
 		return nil, err
 	}
+	want := b.pipeline()
 	var errs []error
 	for _, p := range res.Pipelines {
+		if want != "auto" && p.Name != want {
+			continue
+		}
 		if p.Error != "" {
+			if want != "auto" {
+				return nil, fmt.Errorf("captured: %s: %s", p.Name, p.Error)
+			}
 			errs = append(errs, fmt.Errorf("%s: %s", p.Name, p.Error))
 			continue
 		}
 		log.Printf("captured: pipeline %s, %d display(s)", p.Name, len(p.Displays))
 		return p.Displays, nil
 	}
+	if want != "auto" {
+		return nil, fmt.Errorf("captured: no pipeline named %q", want)
+	}
 	return nil, fmt.Errorf("captured: no pipeline works here: %w", errors.Join(errs...))
+}
+
+// pipeline is the configured "pipeline" property, or "auto".
+func (b *CapturedBackend) pipeline() string {
+	var name string
+	if raw, ok := b.Props["pipeline"]; ok && json.Unmarshal(raw, &name) == nil && name != "" {
+		return name
+	}
+	return "auto"
 }
 
 // capturedStream is one captured child streaming encoded video.
@@ -288,6 +308,10 @@ func (b *CapturedBackend) StartStream(ctx context.Context, req StartRequest) (St
 		params["video.bitrate"] = req.Bitrate
 	}
 	for k, v := range b.Props {
+		if k == "video.codec" {
+			log.Printf("captured: ignoring video.codec=%s, the codec comes from the client's start (%s)", v, req.Codec)
+			continue
+		}
 		params[k] = v
 	}
 	var res struct {
