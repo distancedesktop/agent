@@ -27,6 +27,9 @@ type subscriber struct {
 	ctrl   *webtransport.Stream
 	ctrlMu sync.Mutex
 	video  *webtransport.SendStream
+	// needKey holds back frames from a late joiner until the next keyframe.
+	// Guarded by streamState.subMu.
+	needKey bool
 }
 
 // streamState tracks the one active video stream.
