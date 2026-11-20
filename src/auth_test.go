@@ -139,6 +139,9 @@ func TestUnauthenticatedViewerRejected(t *testing.T) {
 			if rsp == nil || rsp.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("want 401, got rsp=%v err=%v", rsp, err)
 			}
+			if got := rsp.Header.Get("WWW-Authenticate"); got != `Bearer realm="distance"` {
+				t.Fatalf("want Bearer challenge, got %q", got)
+			}
 		})
 	}
 }

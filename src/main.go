@@ -104,6 +104,7 @@ func wtHandler(up *webtransport.Upgrader, cm *certManager, token string) http.Ha
 		log.Printf("WT upgrade request from %s", remote)
 		if !authorized(r, token) {
 			log.Printf("WT upgrade rejected from %s: missing or invalid viewer token", remote)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="distance"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
