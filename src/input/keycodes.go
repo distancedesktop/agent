@@ -1,5 +1,32 @@
 package input
 
+import "fmt"
+
+// Non-extended PC scan codes share their numbers with Linux evdev codes.
+func EvdevCode(code string) (uint16, bool) {
+	if v, ok := scanCodes[code]; ok && v < 0x100 {
+		return v, true
+	}
+	if v, ok := evdevExtended[code]; ok {
+		return v, true
+	}
+	for i := 13; i <= 24; i++ {
+		if code == fmt.Sprintf("F%d", i) {
+			return uint16(183 + i - 13), true
+		}
+	}
+	return 0, false
+}
+
+var evdevExtended = map[string]uint16{
+	"NumpadEnter": 96, "ControlRight": 97, "NumpadDivide": 98,
+	"PrintScreen": 99, "AltRight": 100, "Home": 102, "ArrowUp": 103,
+	"PageUp": 104, "ArrowLeft": 105, "ArrowRight": 106, "End": 107,
+	"ArrowDown": 108, "PageDown": 109, "Insert": 110, "Delete": 111,
+	"NumpadEqual": 117, "Pause": 119, "MetaLeft": 125, "MetaRight": 126,
+	"ContextMenu": 127,
+}
+
 var scanCodes = map[string]uint16{
 	"Escape": 1, "Digit1": 2, "Digit2": 3, "Digit3": 4, "Digit4": 5, "Digit5": 6, "Digit6": 7, "Digit7": 8, "Digit8": 9, "Digit9": 10, "Digit0": 11, "Minus": 12, "Equal": 13, "Backspace": 14, "Tab": 15,
 	"KeyQ": 16, "KeyW": 17, "KeyE": 18, "KeyR": 19, "KeyT": 20, "KeyY": 21, "KeyU": 22, "KeyI": 23, "KeyO": 24, "KeyP": 25, "BracketLeft": 26, "BracketRight": 27, "Enter": 28, "ControlLeft": 29,

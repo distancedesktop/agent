@@ -72,7 +72,7 @@ func (c *Controller) Handle(e Event, g Geometry) error {
 		}
 		return c.Wheel(e.DX, e.DY)
 	case "key":
-		if _, ok := Keysym(e.Code); !ok {
+		if _, ok := EvdevCode(e.Code); !ok {
 			return fmt.Errorf("unsupported key code %q", e.Code)
 		}
 		if err := c.Key(e.Code, e.Down); err != nil {
@@ -126,32 +126,4 @@ func (c *Controller) Close() error {
 		}
 	}
 	return c.Injector.Close()
-}
-
-var keysyms = map[string]uint32{
-	"Enter": 0xff0d, "Escape": 0xff1b, "Backspace": 0xff08, "Tab": 0xff09, "Space": 0x20,
-	"ShiftLeft": 0xffe1, "ShiftRight": 0xffe2, "ControlLeft": 0xffe3, "ControlRight": 0xffe4, "AltLeft": 0xffe9, "AltRight": 0xffea, "MetaLeft": 0xffeb, "MetaRight": 0xffec,
-	"CapsLock": 0xffe5, "NumLock": 0xff7f, "ScrollLock": 0xff14, "Pause": 0xff13, "PrintScreen": 0xff61, "ContextMenu": 0xff67,
-	"ArrowLeft": 0xff51, "ArrowUp": 0xff52, "ArrowRight": 0xff53, "ArrowDown": 0xff54, "Home": 0xff50, "End": 0xff57, "PageUp": 0xff55, "PageDown": 0xff56, "Insert": 0xff63, "Delete": 0xffff,
-	"Minus": '-', "Equal": '=', "BracketLeft": '[', "BracketRight": ']', "Backslash": '\\', "Semicolon": ';', "Quote": '\'', "Backquote": '`', "Comma": ',', "Period": '.', "Slash": '/', "IntlBackslash": '<',
-	"NumpadAdd": 0xffab, "NumpadSubtract": 0xffad, "NumpadMultiply": 0xffaa, "NumpadDivide": 0xffaf, "NumpadDecimal": 0xffae, "NumpadEnter": 0xff8d, "NumpadEqual": 0xffbd,
-}
-
-func Keysym(code string) (uint32, bool) {
-	if len(code) == 4 && code[:3] == "Key" && code[3] >= 'A' && code[3] <= 'Z' {
-		return uint32(code[3] + 32), true
-	}
-	if len(code) == 6 && code[:5] == "Digit" && code[5] >= '0' && code[5] <= '9' {
-		return uint32(code[5]), true
-	}
-	if len(code) == 7 && code[:6] == "Numpad" && code[6] >= '0' && code[6] <= '9' {
-		return 0xffb0 + uint32(code[6]-'0'), true
-	}
-	for i := 1; i <= 24; i++ {
-		if code == fmt.Sprintf("F%d", i) {
-			return 0xffbd + uint32(i), true
-		}
-	}
-	v, ok := keysyms[code]
-	return v, ok
 }

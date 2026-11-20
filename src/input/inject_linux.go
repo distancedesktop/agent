@@ -17,7 +17,6 @@ var xErr error
 var openDisplay func(string) unsafe.Pointer
 var closeDisplay func(unsafe.Pointer) int32
 var flush func(unsafe.Pointer) int32
-var keycode func(unsafe.Pointer, uintptr) uint8
 var motion func(unsafe.Pointer, int32, int32, int32, uintptr) int32
 var relative func(unsafe.Pointer, int32, int32, uintptr) int32
 var button func(unsafe.Pointer, uint32, int32, uintptr) int32
@@ -53,7 +52,6 @@ func New() (Injector, error) {
 		purego.RegisterLibFunc(&openDisplay, x, "XOpenDisplay")
 		purego.RegisterLibFunc(&closeDisplay, x, "XCloseDisplay")
 		purego.RegisterLibFunc(&flush, x, "XFlush")
-		purego.RegisterLibFunc(&keycode, x, "XKeysymToKeycode")
 		purego.RegisterLibFunc(&motion, t, "XTestFakeMotionEvent")
 		purego.RegisterLibFunc(&relative, t, "XTestFakeRelativeMotionEvent")
 		purego.RegisterLibFunc(&button, t, "XTestFakeButtonEvent")
@@ -96,15 +94,11 @@ func (n *native) Button(b int, down bool) error {
 	return n.done(button(n.d, []uint32{1, 2, 3, 8, 9}[b], truth(down), 0))
 }
 func (n *native) Key(code string, down bool) error {
-	sym, ok := Keysym(code)
+	scan, ok := EvdevCode(code)
 	if !ok {
 		return fmt.Errorf("unsupported key %q", code)
 	}
-	k := keycode(n.d, uintptr(sym))
-	if k == 0 {
-		return fmt.Errorf("no X11 keycode for %q", code)
-	}
-	return n.done(key(n.d, uint32(k), truth(down), 0))
+	return n.done(key(n.d, uint32(scan)+8, truth(down), 0))
 }
 func (n *native) Wheel(dx, dy float64) error {
 	n.wx += dx / 40
