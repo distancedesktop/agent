@@ -160,15 +160,19 @@ func main() {
 	printToken := flag.Bool("print-token", false, "print the viewer token and exit")
 	flag.Parse()
 
-	if *tokenFile == "" {
-		*tokenFile = filepath.Join(configDir(), "viewer-token")
-	}
-	viewerToken, err := loadOrCreateToken(*tokenFile)
-	if err != nil {
-		log.Fatalf("viewer token: %v", err)
+	readViewerToken := func() string {
+		path := *tokenFile
+		if path == "" {
+			path = filepath.Join(configDir(), "viewer-token")
+		}
+		token, err := loadOrCreateToken(path)
+		if err != nil {
+			log.Fatalf("viewer token: %v", err)
+		}
+		return token
 	}
 	if *printToken {
-		fmt.Println(viewerToken)
+		fmt.Println(readViewerToken())
 		return
 	}
 
@@ -214,6 +218,7 @@ func main() {
 		tlsConfig = cm.TLSConfig()
 	}
 
+	viewerToken := readViewerToken()
 	wtUpgrader := &webtransport.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
