@@ -9,6 +9,7 @@ import (
 	"github.com/okdaichi/webtransport-go"
 
 	"distancedesktop/agent/src/backend"
+	"distancedesktop/agent/src/input"
 )
 
 // stringList collects a repeatable string flag (e.g. --allow-origin).
@@ -29,7 +30,8 @@ type subscriber struct {
 	video  *webtransport.SendStream
 	// needKey holds back frames from a late joiner until the next keyframe.
 	// Guarded by streamState.subMu.
-	needKey bool
+	needKey    bool
+	inputError bool
 }
 
 // streamState tracks the one active video stream.
@@ -41,7 +43,11 @@ type streamState struct {
 	stopPub     context.CancelFunc
 	streamStart time.Time
 
-	owner *subscriber
+	owner      *subscriber
+	geometry   input.Geometry
+	input      *input.Controller
+	inputTried bool
+	inputErr   error
 }
 
 var (

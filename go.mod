@@ -3,6 +3,7 @@ module distancedesktop/agent
 go 1.26.3
 
 require (
+	github.com/ebitengine/purego v0.8.0
 	github.com/okdaichi/webtransport-go v0.10.2-okdaichi.1
 	github.com/quic-go/quic-go v0.59.1
 )

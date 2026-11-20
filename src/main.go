@@ -155,11 +155,17 @@ func main() {
 	flag.StringVar(&bopts.vnc, "vnc", "", `vnc backend opts: "addr=10.10.1.6:5901"`)
 	flag.StringVar(&bopts.rdp, "rdp", "", `rdp backend opts: "addr=10.10.1.6:3389"`)
 	dryRun := flag.Bool("dry-run", false, "list displays via the selected backend and exit")
+	var inputMode string
+	flag.StringVar(&inputMode, "input", "on", "host input injection: on|off")
 	var allowOrigins stringList
 	flag.Var(&allowOrigins, "allow-origin", "additional allowed browser Origin for WebTransport upgrades (repeatable, e.g. https://distance.example.com); \"*\" allows any")
 	tokenFile := flag.String("token-file", "", "viewer token file; generated on first run (default <config dir>/viewer-token)")
 	printToken := flag.Bool("print-token", false, "print the viewer token and exit")
 	flag.Parse()
+	if inputMode != "on" && inputMode != "off" {
+		log.Fatal("--input must be on or off")
+	}
+	inputEnabled = inputMode == "on"
 
 	readViewerToken := func() string {
 		path := *tokenFile

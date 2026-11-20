@@ -55,8 +55,28 @@ cert) followed by an **unsolicited `displays`**, before the client asks for
 anything. Clients must tolerate `displays` arriving unprompted.
 
 Unrecognized message types are answered with
-`{"type":"error","message":"unknown type: <t>"}`. There is currently no `input`
-or `ping` handler.
+`{"type":"error","message":"unknown type: <t>"}`. There is no `ping` handler.
+
+Only the active stream owner can inject input; other viewers' input is ignored.
+Input events are not logged. Enable/disable host injection with `--input on|off`
+(default `on`). Unavailable injection returns one error per session on first input.
+Linux needs an authorized `DISPLAY`, libX11 and libXtst (XTEST); macOS needs
+Accessibility permission. Held keys/buttons are released when the stream ends.
+
+```json
+{"type":"input","kind":"mouse","dx":10,"dy":-5,"buttons":0}
+{"type":"input","kind":"mousedown","button":0}
+{"type":"input","kind":"mouseup","button":0}
+{"type":"input","kind":"wheel","dx":0,"dy":40}
+{"type":"input","kind":"key","code":"KeyA","down":true}
+{"type":"input","kind":"touch","id":0,"x":0.5,"y":0.5,"phase":"start"}
+```
+
+Mouse movement is relative. DOM buttons 0–4 are left, middle, right, back,
+forward. Wheel deltas are pixels (down positive); X11 accumulates 40 pixels
+per wheel notch. Keys use `KeyboardEvent.code`, with modifiers sent separately.
+Touch maps one contact to the active display's absolute pointer and left button;
+phases are `start`, `move`, `end`, `cancel`. Additional contacts are ignored.
 
 ### Viewer token
 

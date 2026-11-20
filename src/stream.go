@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"distancedesktop/agent/src/backend"
+	"distancedesktop/agent/src/input"
 )
 
 // startStream begins a video stream via the active backend and attaches the
@@ -76,6 +77,15 @@ func startStream(displayID, fps int, codec string, bitrate int, caller *subscrib
 	}
 
 	state.subscribers[caller] = struct{}{}
+	state.geometry = input.Geometry{Width: stream.Width(), Height: stream.Height()}
+	if displays, err := b.ListDisplays(startCtx); err == nil {
+		for _, d := range displays {
+			if d.ID == uint32(displayID) {
+				state.geometry = input.Geometry{X: d.X, Y: d.Y, Width: d.Width, Height: d.Height}
+				break
+			}
+		}
+	}
 
 	go publishStream(pubCtx, state)
 
@@ -165,6 +175,9 @@ func teardown() {
 		return
 	}
 	ss := state
+	if ss.input != nil {
+		ss.input.Close()
+	}
 	log.Printf("teardown: stopping stream")
 
 	ss.subMu.Lock()

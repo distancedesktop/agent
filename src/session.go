@@ -6,8 +6,19 @@ import (
 	"log"
 	"time"
 
+	"distancedesktop/agent/src/input"
+
 	"github.com/okdaichi/webtransport-go"
 )
+
+type controlRequest struct {
+	Type      string `json:"type"`
+	DisplayID uint32 `json:"display_id,omitempty"`
+	FPS       int    `json:"fps,omitempty"`
+	Codec     string `json:"codec,omitempty"`
+	Bitrate   int    `json:"bitrate,omitempty"`
+	input.Event
+}
 
 func handleSession(wtSess *webtransport.Session, cm *certManager) {
 	ctx := wtSess.Context()
@@ -71,28 +82,17 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 	log.Printf("session %s: entering decode loop", remote)
 	dec := json.NewDecoder(sub.ctrl)
 	for {
-		var req struct {
-			Type      string `json:"type"`
-			DisplayID uint32 `json:"display_id,omitempty"`
-			FPS       int    `json:"fps,omitempty"`
-			Codec     string `json:"codec,omitempty"`
-			Bitrate   int    `json:"bitrate,omitempty"`
-		}
+		var req controlRequest
 
 		type msgResult struct {
-			req interface{}
+			req controlRequest
 			err error
 		}
 		msgCh := make(chan msgResult, 1)
 		go func() {
-			var m struct {
-				Type      string `json:"type"`
-				DisplayID uint32 `json:"display_id,omitempty"`
-				FPS       int    `json:"fps,omitempty"`
-				Codec     string `json:"codec,omitempty"`
-				Bitrate   int    `json:"bitrate,omitempty"`
-			}
-			msgCh <- msgResult{req: &m, err: dec.Decode(&m)}
+			var m controlRequest
+			err := dec.Decode(&m)
+			msgCh <- msgResult{req: m, err: err}
 		}()
 
 		select {
@@ -101,21 +101,22 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 				log.Printf("session %s: decode: %v", remote, res.err)
 				return
 			}
-			req = *(res.req.(*struct {
-				Type      string `json:"type"`
-				DisplayID uint32 `json:"display_id,omitempty"`
-				FPS       int    `json:"fps,omitempty"`
-				Codec     string `json:"codec,omitempty"`
-				Bitrate   int    `json:"bitrate,omitempty"`
-			}))
+			req = res.req
 		case <-ctx.Done():
 			log.Printf("session %s: context cancelled while waiting for message: %v", remote, ctx.Err())
 			return
 		}
 
-		log.Printf("session %s: received %s (display=%d fps=%d codec=%s bitrate=%d)", remote, req.Type, req.DisplayID, req.FPS, req.Codec, req.Bitrate)
+		if req.Type != "input" {
+			log.Printf("session %s: received %s (display=%d fps=%d codec=%s bitrate=%d)", remote, req.Type, req.DisplayID, req.FPS, req.Codec, req.Bitrate)
+		}
 
 		switch req.Type {
+		case "input":
+			if err := injectInput(sub, req.Event); err != nil && !sub.inputError {
+				sub.inputError = true
+				sendControlMsg(sub, map[string]string{"type": "error", "message": err.Error()})
+			}
 		case "list-displays":
 			displays, err := listDisplays()
 			if err != nil {
