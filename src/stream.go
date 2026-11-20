@@ -15,6 +15,22 @@ import (
 // caller. Late-joiners attach to an existing stream.
 func startStream(displayID, fps int, codec string, bitrate int, caller *subscriber) error {
 	stateMu.Lock()
+	b := activeBackend
+	var geometry input.Geometry
+	if state == nil {
+		if b == nil {
+			var err error
+			b, err = backend.Get("captured")
+			if err != nil {
+				stateMu.Unlock()
+				return err
+			}
+			activeBackend = b
+		}
+		stateMu.Unlock()
+		geometry = displayGeometry(b, displayID)
+		stateMu.Lock()
+	}
 	defer stateMu.Unlock()
 
 	if state != nil {
@@ -33,16 +49,6 @@ func startStream(displayID, fps int, codec string, bitrate int, caller *subscrib
 		}
 		log.Printf("startStream: late-join complete, now %d subscriber(s)", len(state.subscribers))
 		return nil
-	}
-
-	b := activeBackend
-	if b == nil {
-		var err error
-		b, err = backend.Get("captured")
-		if err != nil {
-			return err
-		}
-		activeBackend = b
 	}
 
 	req := backend.StartRequest{
@@ -78,18 +84,30 @@ func startStream(displayID, fps int, codec string, bitrate int, caller *subscrib
 
 	state.subscribers[caller] = struct{}{}
 	state.geometry = input.Geometry{Width: stream.Width(), Height: stream.Height()}
-	if displays, err := b.ListDisplays(startCtx); err == nil {
-		for _, d := range displays {
-			if d.ID == uint32(displayID) {
-				state.geometry = input.Geometry{X: d.X, Y: d.Y, Width: d.Width, Height: d.Height}
-				break
-			}
-		}
+	if geometry.Width > 0 && geometry.Height > 0 {
+		state.geometry = geometry
 	}
 
 	go publishStream(pubCtx, state)
 
 	return nil
+}
+
+func displayGeometry(b backend.Backend, displayID int) input.Geometry {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	displays, err := b.ListDisplays(ctx)
+	if err != nil {
+		log.Printf("backend %s: display geometry: %v; using stream size at origin (0,0)", b.Name(), err)
+		return input.Geometry{}
+	}
+	for _, d := range displays {
+		if d.ID == uint32(displayID) {
+			return input.Geometry{X: d.X, Y: d.Y, Width: d.Width, Height: d.Height}
+		}
+	}
+	log.Printf("backend %s: display geometry: display %d not found; using stream size at origin (0,0)", b.Name(), displayID)
+	return input.Geometry{}
 }
 
 // publishStream fans backend chunks out to all subscribers.
