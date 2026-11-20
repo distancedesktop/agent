@@ -13,7 +13,7 @@ var user32 = syscall.NewLazyDLL("user32.dll")
 var sendInput = user32.NewProc("SendInput")
 var getMetric = user32.NewProc("GetSystemMetrics")
 
-type native struct{}
+type native struct{ wheel wheelAccumulator }
 
 func New() (Injector, error) {
 	if err := sendInput.Find(); err != nil {
@@ -67,14 +67,15 @@ func (*native) Button(b int, down bool) error {
 	}
 	return winMouse(0, 0, data, flags[b][i])
 }
-func (*native) Wheel(x, y float64) error {
-	if x != 0 {
-		if err := winMouse(0, 0, uint32(int32(x*3)), 0x1000); err != nil {
+func (n *native) Wheel(x, y float64) error {
+	dx, dy := n.wheel.add(x*3, -y*3)
+	if dx != 0 {
+		if err := winMouse(0, 0, uint32(dx), 0x1000); err != nil {
 			return err
 		}
 	}
-	if y != 0 {
-		return winMouse(0, 0, uint32(int32(-y*3)), 0x800)
+	if dy != 0 {
+		return winMouse(0, 0, uint32(dy), 0x800)
 	}
 	return nil
 }

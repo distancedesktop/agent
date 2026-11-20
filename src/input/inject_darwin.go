@@ -27,6 +27,7 @@ var setFlags func(unsafe.Pointer, uint64)
 type point struct{ X, Y float64 }
 type native struct {
 	modifiers   macModifiers
+	wheel       wheelAccumulator
 	buttons     [5]bool
 	clicks      clickTracker
 	clickCounts [5]int64
@@ -117,7 +118,13 @@ func (n *native) Button(b int, down bool) error {
 	n.buttons[b] = down
 	return n.emit(e)
 }
-func (n *native) Wheel(x, y float64) error { return n.emit(scroll(nil, 0, 2, int32(-y), int32(-x), 0)) }
+func (n *native) Wheel(x, y float64) error {
+	dx, dy := n.wheel.add(-x, -y)
+	if dx == 0 && dy == 0 {
+		return nil
+	}
+	return n.emit(scroll(nil, 0, 2, dy, dx, 0))
+}
 func (n *native) Key(code string, down bool) error {
 	k, ok := macCodes[code]
 	if !ok {
