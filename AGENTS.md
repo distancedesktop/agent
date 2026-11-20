@@ -208,6 +208,19 @@ publicly-trusted-cert mode, where clients connect without
 
 ## Build
 
+The embedded viewer is a separate Vite app in `src/web`, not a build of the
+standalone client repository. Rebuild and commit its tracked `dist` assets before
+building the agent; changing the source alone does not update an existing binary.
+
+```sh
+cd src/web
+npm ci
+npm run build
+node --test tests/video.test.mjs
+cd ../..
+go build -o build/agent ./src
+```
+
 ```sh
 go build -o agent .
 ```

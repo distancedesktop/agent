@@ -31,7 +31,9 @@ function buildAvcC(sps: Uint8Array, pps: Uint8Array): Uint8Array {
 }
 
 /** Derive the RFC 6381 codec string (e.g. `avc1.4d4020`) from an SPS NAL. */
-function codecStringFromSps(sps: Uint8Array): string {
+function codecStringFromSps(sps: Uint8Array): string | null {
+  if (sps.length < 4 || sps.length > 65535 || sps[0] & 0x80 ||
+      (sps[0] & 0x1f) !== NAL_SPS || sps[1] === 0 || sps[3] === 0) return null
   const h = (n: number) => n.toString(16).padStart(2, '0')
   return `avc1.${h(sps[1])}${h(sps[2])}${h(sps[3])}`
 }
@@ -112,16 +114,22 @@ export class Decoder {
   feedFrame(frame: VideoFrameRecord): void {
     const au = splitAccessUnit(frame.data)
     if (au.length === 0) return
+    for (const nal of au) {
+      const type = nal[0] & 0x1f
+      if (type === NAL_SPS && !codecStringFromSps(nal)) return
+      if (type === NAL_PPS && (nal.length < 2 || nal.length > 65535)) return
+    }
     this.emitAU(au, frame)
   }
 
   private emitAU(au: Uint8Array[], frame: VideoFrameRecord): void {
-    const carriesParams = au.some((n) => {
+    let carriesParams = false
+    for (const n of au) {
       const t = n[0] & 0x1f
       if (t === NAL_SPS) this.sps = n.slice()
       if (t === NAL_PPS) this.pps = n.slice()
-      return t === NAL_SPS || t === NAL_PPS
-    })
+      if (t === NAL_SPS || t === NAL_PPS) carriesParams = true
+    }
     if (carriesParams && this.sps && this.pps) {
       this.configureDecoder(this.sps, this.pps)
     }
@@ -195,18 +203,20 @@ export class Decoder {
 
   private configureDecoder(sps: Uint8Array, pps: Uint8Array): void {
     const codec = codecStringFromSps(sps)
+    if (!codec) return
     if (this.configured && this.codec === codec) return
 
     if (this.videoDecoder && this.videoDecoder.state !== 'closed') {
-      try { this.videoDecoder.reset() } catch { /* ignore */ }
+      try { this.videoDecoder.close() } catch { /* ignore */ }
     }
 
-    this.videoDecoder = new VideoDecoder({
-      output: (frame) => this.onFrame(frame),
-      error: (e) => this.onDecoderError(e)
-    })
-
+    this.configured = false
+    this.seenKeyframe = false
     try {
+      this.videoDecoder = new VideoDecoder({
+        output: (frame) => this.onFrame(frame),
+        error: (e) => this.onDecoderError(e)
+      })
       this.videoDecoder.configure({
         codec,
         // codedWidth/codedHeight come from the SPS inside `description`.
@@ -215,6 +225,7 @@ export class Decoder {
       })
     } catch (e) {
       console.error('[decoder] configure failed', codec, e)
+      this.close()
       return
     }
 
@@ -274,7 +285,7 @@ export class Decoder {
     this.firstFrameDrawn = false
     this.seenKeyframe = false
     this.droppedBeforeKeyframe = 0
-    try { this.videoDecoder?.reset() } catch { /* ignore */ }
+    try { this.videoDecoder?.close() } catch { /* ignore */ }
     this.videoDecoder = null
   }
 

@@ -1,5 +1,6 @@
 import type { ClientMessage, ServerMessage, ControlMessage, VideoFrameRecord } from './types'
 import { hexToBytes } from './util'
+import { VideoRecordParser } from './video'
 
 export interface ConnectOptions {
   // Full WebTransport endpoint, e.g. https://10.10.1.5:52020/wt
@@ -209,7 +210,7 @@ export class Transport {
   // picked up promptly instead of waiting on the previous one to end.
   private async pumpVideoStream(stream: ReadableStream<Uint8Array>): Promise<void> {
     const reader = stream.getReader()
-    let buf = new Uint8Array(0)
+    const parser = new VideoRecordParser()
     try {
       while (true) {
         const { value, done } = await reader.read()
@@ -217,20 +218,15 @@ export class Transport {
         if (!value || value.byteLength === 0) continue
         this.rxBytes += value.byteLength
         this.windowBytes += value.byteLength
-        buf = concat(buf, value)
-        while (buf.length >= 13) {
-          const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
-          const payloadLen = view.getUint32(9)
-          const recordLen = 13 + payloadLen
-          if (buf.length < recordLen) break
-          this.videoHandler?.({
-            keyframe: (buf[0] & 1) !== 0,
-            timestampMs: Number(view.getBigUint64(1)),
-            data: buf.slice(13, recordLen)
-          })
-          buf = buf.slice(recordLen)
+        for (const frame of parser.push(value)) {
+          try {
+            this.videoHandler?.(frame)
+          } catch (err) {
+            console.warn('[transport] discarded video frame', err)
+          }
         }
       }
+      parser.finish()
     } catch (err) {
       if (!this.closed) console.warn('[transport] video stream error', err)
     } finally {
