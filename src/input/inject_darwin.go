@@ -22,9 +22,11 @@ var release func(unsafe.Pointer)
 var scroll func(unsafe.Pointer, uint32, uint32, int32, int32, int32) unsafe.Pointer
 var trusted func() bool
 var setIntegerValue func(unsafe.Pointer, uint32, int64)
+var setFlags func(unsafe.Pointer, uint64)
 
 type point struct{ X, Y float64 }
 type native struct {
+	modifiers   macModifiers
 	buttons     [5]bool
 	clicks      clickTracker
 	clickCounts [5]int64
@@ -46,6 +48,7 @@ func New() (Injector, error) {
 		purego.RegisterLibFunc(&scroll, h, "CGEventCreateScrollWheelEvent2")
 		purego.RegisterLibFunc(&trusted, h, "AXIsProcessTrusted")
 		purego.RegisterLibFunc(&setIntegerValue, h, "CGEventSetIntegerValueField")
+		purego.RegisterLibFunc(&setFlags, h, "CGEventSetFlags")
 	})
 	if macErr != nil {
 		return nil, macErr
@@ -55,10 +58,11 @@ func New() (Injector, error) {
 	}
 	return &native{}, nil
 }
-func emit(e unsafe.Pointer) error {
+func (n *native) emit(e unsafe.Pointer) error {
 	if e == nil {
 		return fmt.Errorf("CGEvent creation failed")
 	}
+	setFlags(e, n.modifiers.flags())
 	post(0, e)
 	release(e)
 	return nil
@@ -81,7 +85,7 @@ func (n *native) Move(x, y int) error {
 	} else if n.buttons[1] {
 		kind, b = 27, 2
 	}
-	return emit(createMouse(nil, kind, point{float64(x), float64(y)}, b))
+	return n.emit(createMouse(nil, kind, point{float64(x), float64(y)}, b))
 }
 func (n *native) Button(b int, down bool) error {
 	if b < 0 || b > 4 {
@@ -111,19 +115,20 @@ func (n *native) Button(b int, down bool) error {
 	}
 	setIntegerValue(e, 1, count) // kCGMouseEventClickState
 	n.buttons[b] = down
-	return emit(e)
+	return n.emit(e)
 }
-func (*native) Wheel(x, y float64) error { return emit(scroll(nil, 0, 2, int32(-y), int32(-x), 0)) }
-func (*native) Key(code string, down bool) error {
+func (n *native) Wheel(x, y float64) error { return n.emit(scroll(nil, 0, 2, int32(-y), int32(-x), 0)) }
+func (n *native) Key(code string, down bool) error {
 	k, ok := macCodes[code]
 	if !ok {
 		return fmt.Errorf("unsupported macOS key %q", code)
 	}
-	return emit(createKey(nil, k, down))
+	previous := n.modifiers
+	n.modifiers.update(code, down)
+	if err := n.emit(createKey(nil, k, down)); err != nil {
+		n.modifiers = previous
+		return err
+	}
+	return nil
 }
 func (*native) Close() error { return nil }
-
-var macCodes = map[string]uint16{
-	"KeyA": 0, "KeyS": 1, "KeyD": 2, "KeyF": 3, "KeyH": 4, "KeyG": 5, "KeyZ": 6, "KeyX": 7, "KeyC": 8, "KeyV": 9, "KeyB": 11, "KeyQ": 12, "KeyW": 13, "KeyE": 14, "KeyR": 15, "KeyY": 16, "KeyT": 17, "Digit1": 18, "Digit2": 19, "Digit3": 20, "Digit4": 21, "Digit6": 22, "Digit5": 23, "Equal": 24, "Digit9": 25, "Digit7": 26, "Minus": 27, "Digit8": 28, "Digit0": 29, "BracketRight": 30, "KeyO": 31, "KeyU": 32, "BracketLeft": 33, "KeyI": 34, "KeyP": 35, "Enter": 36, "KeyL": 37, "KeyJ": 38, "Quote": 39, "KeyK": 40, "Semicolon": 41, "Backslash": 42, "Comma": 43, "Slash": 44, "KeyN": 45, "KeyM": 46, "Period": 47, "Tab": 48, "Space": 49, "Backquote": 50, "Backspace": 51, "Escape": 53, "MetaRight": 54, "MetaLeft": 55, "ShiftLeft": 56, "CapsLock": 57, "AltLeft": 58, "ControlLeft": 59, "ShiftRight": 60, "AltRight": 61, "ControlRight": 62,
-	"F1": 122, "F2": 120, "F3": 99, "F4": 118, "F5": 96, "F6": 97, "F7": 98, "F8": 100, "F9": 101, "F10": 109, "F11": 103, "F12": 111, "Home": 115, "PageUp": 116, "Delete": 117, "End": 119, "PageDown": 121, "ArrowLeft": 123, "ArrowRight": 124, "ArrowDown": 125, "ArrowUp": 126,
-}

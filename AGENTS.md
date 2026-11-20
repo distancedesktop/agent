@@ -66,6 +66,11 @@ Accessibility permission. Held keys/buttons are released when the stream ends.
 Windows relative pointer movement uses `MOUSEEVENTF_MOVE`, so host pointer
 acceleration/settings apply; movement is not raw, unaccelerated input.
 
+macOS applies held Shift/Control/Option/Command flags to keyboard and pointer
+events, with a session-local CapsLock toggle. Unsupported macOS codes currently
+include F13–F24, PrintScreen, Pause, ScrollLock, NumLock, Insert, ContextMenu,
+IntlBackslash, and all Numpad codes; these return an unsupported-key error.
+
 ```json
 {"type":"input","kind":"mouse","dx":10,"dy":-5,"buttons":0}
 {"type":"input","kind":"mousedown","button":0}

@@ -8,6 +8,9 @@ import (
 )
 
 func TestMouseClickState(t *testing.T) {
+	oldFlags := setFlags
+	setFlags = func(unsafe.Pointer, uint64) {}
+	defer func() { setFlags = oldFlags }()
 	oldCreate, oldLocation, oldGet, oldSet, oldPost, oldRelease := createMouse, createEvent, getLocation, setIntegerValue, post, release
 	defer func() {
 		createMouse, createEvent, getLocation, setIntegerValue, post, release = oldCreate, oldLocation, oldGet, oldSet, oldPost, oldRelease
