@@ -2,16 +2,15 @@
 
 ## captured (../captured/)
 
-Dumb screen capture daemon. Unix sockets in `/tmp/`. No deps beyond Go stdlib.
+Capture and encode in one process. The agent spawns it per stream (and briefly for display listing). See `../captured/README.md` for the full protocol.
 
-- **Control**: `/tmp/captured.socket` — JSON over Unix socket. Commands: `list-displays`, `start-stream`, `stop-stream`, `info`.
-- **Media**: `/tmp/captured-media.socket` — raw BGRA frames: `[4B width][4B height][w*h*4 BGRA]`. Only active during a stream.
-- **Run**: `go run .` (optionally `--listen :9090` for TCP control).
-- **Pipeline interface**: `pipelines/pipeline.go`. Per-platform impls in `pipelines/{macos,linux,windows}/`. Only macOS done (uses `sckit-go` for ScreenCaptureKit).
+- **Control**: JSON-RPC 2.0 lines on captured's stdin/stdout. Methods `list`, `get`, `set`, `start`, `stop`, plus a `stopped` notification. Properties are generic keys like `video.bitrate`, `video.codec`, `video.encoder`, `stats.encode_avg_ms`.
+- **Media**: encoded records on fd 3 (an inherited handle passed with `--media fd:<handle>` on Windows): `[u32 BE len][u8 type][u8 flags][u16 0][u64 BE pts µs][payload]`. Type 0 is one access unit (flag bit 0 keyframe), type 2 is a format JSON.
+- **Build**: cgo with libavcodec/libavutil/libswscale dev packages. `kms_nvidia` needs `setcap cap_sys_admin+ep` on the binary.
 
 ## agent (this dir)
 
-Reads BGRA from captured, GPU-encodes via ffmpeg, publishes over WebTransport/QUIC.
+Spawns captured, forwards its encoded access units over WebTransport/QUIC.
 
 ### Ports
 
@@ -33,7 +32,7 @@ JSON control messages (bidirectional stream):
 {"type":"list-displays"} → {"type":"displays","displays":[...]}
 {"type":"start","display_id":0,"fps":60} → {"type":"started","width":1920,"height":1080,"codec":"h264"}
 {"type":"stop"} → {"type":"stopped"}
-{"type":"stream-ended"}  // sent to all subscribers on stop
+{"type":"stream-ended"}  // sent to the other subscribers when the owner stops or leaves
 {"type":"fingerprint-refresh","algorithm":"sha-256","fingerprint":"<hex>"}  // sent on connect + cert rotation
 ```
 
@@ -56,8 +55,47 @@ cert) followed by an **unsolicited `displays`**, before the client asks for
 anything. Clients must tolerate `displays` arriving unprompted.
 
 Unrecognized message types are answered with
-`{"type":"error","message":"unknown type: <t>"}`. There is currently no `input`
-or `ping` handler.
+`{"type":"error","message":"unknown type: <t>"}`. There is no `ping` handler.
+
+Only the active stream owner can inject input; other viewers' input is ignored.
+Input events are not logged. Enable/disable host injection with `--input on|off`
+(default `on`). Unavailable injection returns one error per session on first input.
+Linux needs an authorized `DISPLAY`, libX11 and libXtst (XTEST); macOS needs
+Accessibility permission. Held keys/buttons are released when the stream ends.
+
+Windows relative pointer movement uses `MOUSEEVENTF_MOVE`, so host pointer
+acceleration/settings apply; movement is not raw, unaccelerated input.
+
+macOS applies held Shift/Control/Option/Command flags to keyboard and pointer
+events, with a session-local CapsLock toggle. Unsupported macOS codes currently
+include F13–F24, PrintScreen, Pause, ScrollLock, NumLock, Insert, ContextMenu,
+IntlBackslash, and all Numpad codes; these return an unsupported-key error.
+
+```json
+{"type":"input","kind":"mouse","dx":10,"dy":-5,"buttons":0}
+{"type":"input","kind":"mousedown","button":0}
+{"type":"input","kind":"mouseup","button":0}
+{"type":"input","kind":"wheel","dx":0,"dy":40}
+{"type":"input","kind":"key","code":"KeyA","down":true}
+{"type":"input","kind":"touch","id":0,"x":0.5,"y":0.5,"phase":"start"}
+```
+
+Mouse movement is relative. DOM buttons 0–4 are left, middle, right, back,
+forward. Wheel deltas are pixels (down positive); X11 accumulates 40 pixels
+per wheel notch. Keys use `KeyboardEvent.code`, with modifiers sent separately.
+Touch maps one contact to the active display's absolute pointer and left button;
+phases are `start`, `move`, `end`, `cancel`. Additional contacts are ignored.
+
+### Viewer token
+
+Every `/wt` upgrade must carry the agent's viewer token, or it is refused with
+401 before any session exists. Browsers cannot set headers on a WebTransport
+CONNECT, so viewers send it as a query parameter (`/wt?token=<token>`);
+non-browser clients may send `Authorization: Bearer <token>` instead. The token
+is generated on first run into `<config dir>/viewer-token` (mode 0600, override
+with `--token-file`) and shown with `--print-token`. Rotate it by replacing the
+file and restarting. Origin checks and cert pinning do not authenticate viewers;
+this token does.
 
 ### Origin checks
 
@@ -76,8 +114,9 @@ passed with `--allow-origin`.
 - No CA chain, no `security add-trusted-cert` needed
 
 ### Client connection (browser JavaScript)
+`token` is the viewer token (`distance-agent --print-token`).
 ```js
-const transport = new WebTransport(`https://${ip}:52020/wt`, {
+const transport = new WebTransport(`https://${ip}:52020/wt?token=${encodeURIComponent(token)}`, {
   serverCertificateHashes: [{
     algorithm: "sha-256",
     value: new Uint8Array(fingerprintBytes)
@@ -106,18 +145,20 @@ Embedded HTML at `http://<server>:52022/` showing:
 | `--cert cert.pem` | Custom TLS certificate (ECDSA P-256 PEM) |
 | `--key key.pem` | Custom TLS private key (ECDSA P-256 PEM) |
 | `--backend auto\|captured\|sunshine\|vnc\|rdp` | Video backend (auto probes in order captured → sunshine → vnc → rdp) |
-| `--captured "source=...,device=..."` | captured backend opts (source/device for Spike B pipelines) |
+| `--captured "bin=...,pipeline=...,video.encoder=..."` | captured binary (default `$CAPTURED_BIN`, then `captured` on PATH) and any captured properties to set on start, except `video.codec`, which comes from the client's `start` (the viewer only decodes H.264). `pipeline` also picks which pipeline's displays are listed |
 | `--sunshine "addr=host:47989"` | Sunshine/Moonlight host address |
 | `--vnc "addr=host:5901"` | VNC server address |
 | `--rdp "addr=host:3389"` | RDP server address |
 | `--allow-origin <origin>` | Additional allowed browser `Origin` for WT upgrades (repeatable; `*` allows any). Needed when the viewer is hosted somewhere other than the agent's own `:52022`, e.g. behind a reverse proxy. |
+| `--token-file <path>` | Viewer token file; generated on first run (default `<config dir>/viewer-token`) |
+| `--print-token` | Print the viewer token and exit |
 | `--dry-run` | List displays via the selected backend and exit |
 
 ### Architecture
 
 ```text
 backend.Backend { ListDisplays(ctx) ([]Display,error); StartStream(ctx, StartRequest) (Stream,error); Stream.Chunks() <-chan H264Chunk }   (src/backend/backend.go)
-  ├─ captured  — unix-socket daemon + ffmpeg encode (src/backend/captured.go)
+  ├─ captured  — spawned captured child, capture + encode in one process (src/backend/captured.go)
   ├─ sunshine  — Moonlight RTSP passthrough H264 (STUB, src/backend/sunshine.go)
   ├─ vnc       — RFB frame polling (STUB, src/backend/vnc.go)
   └─ rdp       — MS-RDPBCGR (STUB, src/backend/rdp.go)
@@ -129,26 +170,26 @@ activeBackend (chosen via --backend at startup):
 
 ### Start sequence
 1. Client opens WebTransport session → opens bidirectional stream → sends `{"type":"start"}`
-2. Agent dials `/tmp/captured.socket` → sends `start-stream`
-3. Captured returns media socket path → agent connects → reads first frame (header + data) for dimensions
-4. Agent spawns `ffmpeg` with correct `-s WxH`, writes first frame, starts BGRA reader goroutine for subsequent frames
-5. Agent opens unidirectional stream on the caller's session → adds caller as owner + subscriber
-6. ffmpeg stdout read in 64KB chunks → chunks pass through the framer, and complete framed access-unit records are written to all subscriber unidirectional streams
-7. Agent responds to caller with `{"type":"started","width":...,"height":...,"codec":"h264"}`
+2. Agent spawns captured with a pipe on fd 3 → sends JSON-RPC `start` with display, fps, codec and bitrate (plus `--captured` properties)
+3. captured replies with every property, including `video.size` and `video.active_encoder`
+4. Agent opens unidirectional stream on the caller's session → adds caller as owner + subscriber
+5. Each video record on fd 3 is one access unit; it goes straight into a framed record for every subscriber's unidirectional stream (no framer pass)
+6. Agent responds to caller with `{"type":"started","width":...,"height":...,"codec":"h264"}`
 
 ### Stop sequence
-1. Any client sends `{"type":"stop"}` → cancel publish context → close ffmpeg stdin (EOF) → `cmd.Wait()`
-2. Close media socket → send `stop-stream` to captured → close control socket
-3. Send `{"type":"stream-ended"}` to all subscribers → close all sessions
-4. Set `state = nil`
+1. A non-owner's `{"type":"stop"}` only detaches that viewer; the owner's held input and injector remain active. An owner stop cancels the publish context, releases held input, and closes captured's stdin, which makes it stop and exit (killed after 2 s)
+2. Send `{"type":"stream-ended"}` to all subscribers → close all sessions
+3. Set `state = nil`
+
+A `stopped` notification from captured (capture or encoder failure) tears the stream down the same way.
 
 ### Owner disconnect
-- If the client that started the stream disconnects, stream is torn down automatically
-- All subscribers receive `stream-ended`
+- If the client that started the stream (the owner) sends `stop` or disconnects, the stream is torn down and the other subscribers receive `stream-ended`
+- A `stop` or disconnect from any other subscriber only closes that subscriber's video stream; the stream keeps running for the rest, unless no subscribers remain
 
 ### Late joiners
 - Clients connecting while a stream is active are auto-registered as subscribers (no video until they send `start`)
-- On `start`, agent opens a unidirectional stream on their session for video
+- On `start`, agent opens a unidirectional stream on their session for video and asks captured for a keyframe (`video.keyframe`), since captured only sends IDRs on request by default
 
 ### Fingerprint refresh flow
 1. Cert rotation goroutine detects < 7 days remaining
@@ -174,6 +215,19 @@ publicly-trusted-cert mode, where clients connect without
 - `github.com/quic-go/quic-go` — QUIC transport layer
 
 ## Build
+
+The embedded viewer is a separate Vite app in `src/web`, not a build of the
+standalone client repository. Rebuild and commit its tracked `dist` assets before
+building the agent; changing the source alone does not update an existing binary.
+
+```sh
+cd src/web
+npm ci
+npm run build
+node --test tests/video.test.mjs
+cd ../..
+go build -o build/agent ./src
+```
 
 ```sh
 go build -o agent .

@@ -14,6 +14,8 @@ export class InputController {
   private send: Send
   private target: HTMLElement | null = null
   private locked = false
+  private heldKeys = new Set<string>()
+  private heldButtons = new Set<number>()
   private bound: Array<[EventTarget, string, EventListenerOrEventListenerObject, AddEventListenerOptions | boolean]> = []
 
   constructor(send: Send) {
@@ -21,6 +23,7 @@ export class InputController {
   }
 
   attach(target: HTMLElement): void {
+    if (this.target) this.detach()
     this.target = target
 
     this.on(target, 'click', () => {
@@ -33,6 +36,7 @@ export class InputController {
       this.locked = document.pointerLockElement === target
       target.classList.toggle('locked', this.locked)
       if (this.locked) this.tryKeyboardLock()
+      else this.releaseHeld()
     })
 
     this.on(target, 'mousemove', (e) => {
@@ -47,12 +51,14 @@ export class InputController {
     this.on(target, 'mousedown', (e) => {
       if (!this.locked) return
       const ev = e as MouseEvent
+      this.heldButtons.add(ev.button)
       this.send({ type: 'input', kind: 'mousedown', button: ev.button })
     })
 
     this.on(target, 'mouseup', (e) => {
       if (!this.locked) return
       const ev = e as MouseEvent
+      this.heldButtons.delete(ev.button)
       this.send({ type: 'input', kind: 'mouseup', button: ev.button })
     })
 
@@ -92,10 +98,13 @@ export class InputController {
   }
 
   detach(): void {
+    this.releaseHeld()
     this.release()
     for (const [t, type, fn, opts] of this.bound) t.removeEventListener(type, fn, opts)
     this.bound = []
+    this.target?.classList.remove('locked')
     this.target = null
+    this.locked = false
   }
 
   private on(
@@ -162,7 +171,22 @@ export class InputController {
       'F12'
     ]
     if (swallow.includes(e.key)) e.preventDefault()
+    if (down) this.heldKeys.add(e.code)
+    else this.heldKeys.delete(e.code)
     this.send({ type: 'input', kind: 'key', code: e.code, down })
+  }
+
+  private releaseHeld(): void {
+    const buttons = [...this.heldButtons]
+    const keys = [...this.heldKeys]
+    this.heldButtons.clear()
+    this.heldKeys.clear()
+    try {
+      for (const button of buttons) this.send({ type: 'input', kind: 'mouseup', button })
+      for (const code of keys) this.send({ type: 'input', kind: 'key', code, down: false })
+    } catch {
+      /* transport already closed; the agent releases held input on teardown */
+    }
   }
 
   private onTouch(e: TouchEvent, phase: 'start' | 'move' | 'end'): void {

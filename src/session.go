@@ -6,8 +6,19 @@ import (
 	"log"
 	"time"
 
+	"distancedesktop/agent/src/input"
+
 	"github.com/okdaichi/webtransport-go"
 )
+
+type controlRequest struct {
+	Type      string `json:"type"`
+	DisplayID uint32 `json:"display_id,omitempty"`
+	FPS       int    `json:"fps,omitempty"`
+	Codec     string `json:"codec,omitempty"`
+	Bitrate   int    `json:"bitrate,omitempty"`
+	input.Event
+}
 
 func handleSession(wtSess *webtransport.Session, cm *certManager) {
 	ctx := wtSess.Context()
@@ -37,16 +48,7 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 	defer func() {
 		stream.Close()
 		stateMu.Lock()
-		if state != nil {
-			state.subMu.Lock()
-			delete(state.subscribers, sub)
-			isOwner := state.owner == sub
-			state.subMu.Unlock()
-			if isOwner {
-				log.Printf("session %s: owner disconnected, tearing down stream", remote)
-				teardown()
-			}
-		}
+		leaveStream(sub)
 		stateMu.Unlock()
 		log.Printf("session %s: closed", remote)
 	}()
@@ -71,28 +73,17 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 	log.Printf("session %s: entering decode loop", remote)
 	dec := json.NewDecoder(sub.ctrl)
 	for {
-		var req struct {
-			Type      string `json:"type"`
-			DisplayID uint32 `json:"display_id,omitempty"`
-			FPS       int    `json:"fps,omitempty"`
-			Codec     string `json:"codec,omitempty"`
-			Bitrate   int    `json:"bitrate,omitempty"`
-		}
+		var req controlRequest
 
 		type msgResult struct {
-			req interface{}
+			req controlRequest
 			err error
 		}
 		msgCh := make(chan msgResult, 1)
 		go func() {
-			var m struct {
-				Type      string `json:"type"`
-				DisplayID uint32 `json:"display_id,omitempty"`
-				FPS       int    `json:"fps,omitempty"`
-				Codec     string `json:"codec,omitempty"`
-				Bitrate   int    `json:"bitrate,omitempty"`
-			}
-			msgCh <- msgResult{req: &m, err: dec.Decode(&m)}
+			var m controlRequest
+			err := dec.Decode(&m)
+			msgCh <- msgResult{req: m, err: err}
 		}()
 
 		select {
@@ -101,21 +92,21 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 				log.Printf("session %s: decode: %v", remote, res.err)
 				return
 			}
-			req = *(res.req.(*struct {
-				Type      string `json:"type"`
-				DisplayID uint32 `json:"display_id,omitempty"`
-				FPS       int    `json:"fps,omitempty"`
-				Codec     string `json:"codec,omitempty"`
-				Bitrate   int    `json:"bitrate,omitempty"`
-			}))
+			req = res.req
 		case <-ctx.Done():
 			log.Printf("session %s: context cancelled while waiting for message: %v", remote, ctx.Err())
 			return
 		}
 
-		log.Printf("session %s: received %s (display=%d fps=%d codec=%s bitrate=%d)", remote, req.Type, req.DisplayID, req.FPS, req.Codec, req.Bitrate)
+		if req.Type != "input" {
+			log.Printf("session %s: received %s (display=%d fps=%d codec=%s bitrate=%d)", remote, req.Type, req.DisplayID, req.FPS, req.Codec, req.Bitrate)
+		}
 
 		switch req.Type {
+		case "input":
+			if err := injectInput(sub, req.Event); sub.reportInputError(err) {
+				sendControlMsg(sub, map[string]string{"type": "error", "message": err.Error()})
+			}
 		case "list-displays":
 			displays, err := listDisplays()
 			if err != nil {
@@ -154,11 +145,9 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 			})
 
 		case "stop":
-			log.Printf("session %s: stopping stream", remote)
+			log.Printf("session %s: stop requested", remote)
 			stateMu.Lock()
-			if state != nil {
-				teardown()
-			}
+			leaveStream(sub)
 			stateMu.Unlock()
 			sendControlMsg(sub, map[string]string{"type": "stopped"})
 
@@ -166,6 +155,36 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 			log.Printf("session %s: unknown message type: %s", remote, req.Type)
 			sendControlMsg(sub, map[string]string{"type": "error", "message": fmt.Sprintf("unknown type: %s", req.Type)})
 		}
+	}
+}
+
+// leaveStream detaches sub from the active stream. The stream is torn down
+// for everyone else only when sub owns it or was its last subscriber.
+// sub is removed before any teardown so teardown never writes to a session
+// that is already gone. Caller must hold stateMu.
+func leaveStream(sub *subscriber) {
+	if state == nil {
+		return
+	}
+	remote := sub.sess.RemoteAddr()
+	state.subMu.Lock()
+	_, subscribed := state.subscribers[sub]
+	delete(state.subscribers, sub)
+	if sub.video != nil {
+		sub.video.Close()
+		sub.video = nil
+	}
+	remaining := len(state.subscribers)
+	state.subMu.Unlock()
+	switch {
+	case state.owner == sub:
+		log.Printf("session %s: owner left, tearing down stream", remote)
+		teardown()
+	case subscribed && remaining == 0:
+		log.Printf("session %s: last subscriber left, tearing down stream", remote)
+		teardown()
+	case subscribed:
+		log.Printf("session %s: left stream, %d subscriber(s) remain", remote, remaining)
 	}
 }
 

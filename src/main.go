@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -45,6 +47,27 @@ func parseKV(s string) map[string]string {
 
 // configureBackends builds the concrete backends from flags.
 func configureBackends(o backendOpts) {
+	if o.captured != "" {
+		b, err := backend.Get("captured")
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		cb := b.(*backend.CapturedBackend)
+		for k, v := range parseKV(o.captured) {
+			if k == "bin" {
+				cb.Bin = v
+				continue
+			}
+			if !json.Valid([]byte(v)) {
+				q, _ := json.Marshal(v)
+				v = string(q)
+			}
+			if cb.Props == nil {
+				cb.Props = map[string]json.RawMessage{}
+			}
+			cb.Props[k] = json.RawMessage(v)
+		}
+	}
 	for _, entry := range []struct {
 		name string
 		opts string
@@ -69,6 +92,30 @@ func configureBackends(o backendOpts) {
 		case *backend.RDPBackend:
 			t.Addr = addr
 		}
+	}
+}
+
+// wtHandler upgrades /wt requests that carry the viewer token. The check runs
+// before Upgrade so an unauthenticated viewer gets a plain 401 and never sees a
+// session, the display list or video.
+func wtHandler(up *webtransport.Upgrader, cm *certManager, token string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		remote := r.RemoteAddr
+		log.Printf("WT upgrade request from %s", remote)
+		if !authorized(r, token) {
+			log.Printf("WT upgrade rejected from %s: missing or invalid viewer token", remote)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="distance"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		s, err := up.Upgrade(w, r)
+		if err != nil {
+			log.Printf("WT upgrade failed from %s: %v", remote, err)
+			w.WriteHeader(400)
+			return
+		}
+		log.Printf("WT upgrade succeeded from %s", remote)
+		go handleSession(s, cm)
 	}
 }
 
@@ -103,14 +150,38 @@ func main() {
 
 	backendName := flag.String("backend", "auto", fmt.Sprintf("video backend: auto|%s", strings.Join(backend.Names(), "|")))
 	var bopts backendOpts
-	flag.StringVar(&bopts.captured, "captured", "", `captured backend opts: "source=kms,device=/dev/dri/card1"`)
+	flag.StringVar(&bopts.captured, "captured", "", `captured backend opts: "bin=/path/to/captured,pipeline=kms_nvidia,video.encoder=h264_nvenc" (any captured property except video.codec)`)
 	flag.StringVar(&bopts.sunshine, "sunshine", "", `sunshine backend opts: "addr=127.0.0.1:47989"`)
 	flag.StringVar(&bopts.vnc, "vnc", "", `vnc backend opts: "addr=10.10.1.6:5901"`)
 	flag.StringVar(&bopts.rdp, "rdp", "", `rdp backend opts: "addr=10.10.1.6:3389"`)
 	dryRun := flag.Bool("dry-run", false, "list displays via the selected backend and exit")
+	var inputMode string
+	flag.StringVar(&inputMode, "input", "on", "host input injection: on|off")
 	var allowOrigins stringList
 	flag.Var(&allowOrigins, "allow-origin", "additional allowed browser Origin for WebTransport upgrades (repeatable, e.g. https://distance.example.com); \"*\" allows any")
+	tokenFile := flag.String("token-file", "", "viewer token file; generated on first run (default <config dir>/viewer-token)")
+	printToken := flag.Bool("print-token", false, "print the viewer token and exit")
 	flag.Parse()
+	if inputMode != "on" && inputMode != "off" {
+		log.Fatal("--input must be on or off")
+	}
+	inputEnabled = inputMode == "on"
+
+	readViewerToken := func() string {
+		path := *tokenFile
+		if path == "" {
+			path = filepath.Join(configDir(), "viewer-token")
+		}
+		token, err := loadOrCreateToken(path)
+		if err != nil {
+			log.Fatalf("viewer token: %v", err)
+		}
+		return token
+	}
+	if *printToken {
+		fmt.Println(readViewerToken())
+		return
+	}
 
 	configureBackends(bopts)
 	sel := selectBackend(*backendName)
@@ -154,6 +225,7 @@ func main() {
 		tlsConfig = cm.TLSConfig()
 	}
 
+	viewerToken := readViewerToken()
 	wtUpgrader := &webtransport.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
@@ -193,29 +265,21 @@ func main() {
 			Addr:      *addr,
 			TLSConfig: tlsConfig,
 			QUICConfig: &quic.Config{
-				EnableDatagrams: true,
+				// Fit Initial packets inside 1280-byte tunnel MTUs, including IP/UDP headers.
+				InitialPacketSize: 1200,
+				EnableDatagrams:   true,
 			},
 		},
 	}
 
 	wtMux := http.NewServeMux()
 
-	wtMux.HandleFunc("/wt", func(w http.ResponseWriter, r *http.Request) {
-		remote := r.RemoteAddr
-		log.Printf("WT upgrade request from %s", remote)
-		s, err := wtUpgrader.Upgrade(w, r)
-		if err != nil {
-			log.Printf("WT upgrade failed from %s: %v", remote, err)
-			w.WriteHeader(400)
-			return
-		}
-		log.Printf("WT upgrade succeeded from %s", remote)
-		go handleSession(s, cm)
-	})
+	wtMux.HandleFunc("/wt", wtHandler(wtUpgrader, cm, viewerToken))
 
 	wtServer.H3.Handler = wtMux
 
 	log.Printf("local IPs: %v", localIPs())
+	log.Printf("viewers must present the token in %s (show it with --print-token)", *tokenFile)
 
 	udpAddr, err := net.ResolveUDPAddr("udp", *addr)
 	if err != nil {

@@ -8,12 +8,29 @@ import (
 	"time"
 
 	"distancedesktop/agent/src/backend"
+	"distancedesktop/agent/src/input"
 )
 
 // startStream begins a video stream via the active backend and attaches the
 // caller. Late-joiners attach to an existing stream.
 func startStream(displayID, fps int, codec string, bitrate int, caller *subscriber) error {
 	stateMu.Lock()
+	b := activeBackend
+	var geometry input.Geometry
+	if state == nil {
+		if b == nil {
+			var err error
+			b, err = backend.Get("captured")
+			if err != nil {
+				stateMu.Unlock()
+				return err
+			}
+			activeBackend = b
+		}
+		stateMu.Unlock()
+		geometry = displayGeometry(b, displayID)
+		stateMu.Lock()
+	}
 	defer stateMu.Unlock()
 
 	if state != nil {
@@ -24,20 +41,14 @@ func startStream(displayID, fps int, codec string, bitrate int, caller *subscrib
 		}
 		caller.video = videoStream
 		state.subMu.Lock()
+		caller.needKey = true
 		state.subscribers[caller] = struct{}{}
 		state.subMu.Unlock()
+		if kr, ok := state.stream.(backend.KeyframeRequester); ok {
+			kr.RequestKeyframe()
+		}
 		log.Printf("startStream: late-join complete, now %d subscriber(s)", len(state.subscribers))
 		return nil
-	}
-
-	b := activeBackend
-	if b == nil {
-		var err error
-		b, err = backend.Get("captured")
-		if err != nil {
-			return err
-		}
-		activeBackend = b
 	}
 
 	req := backend.StartRequest{
@@ -72,10 +83,31 @@ func startStream(displayID, fps int, codec string, bitrate int, caller *subscrib
 	}
 
 	state.subscribers[caller] = struct{}{}
+	state.geometry = input.Geometry{Width: stream.Width(), Height: stream.Height()}
+	if geometry.Width > 0 && geometry.Height > 0 {
+		state.geometry = geometry
+	}
 
 	go publishStream(pubCtx, state)
 
 	return nil
+}
+
+func displayGeometry(b backend.Backend, displayID int) input.Geometry {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	displays, err := b.ListDisplays(ctx)
+	if err != nil {
+		log.Printf("backend %s: display geometry: %v; using stream size at origin (0,0)", b.Name(), err)
+		return input.Geometry{}
+	}
+	for _, d := range displays {
+		if d.ID == uint32(displayID) {
+			return input.Geometry{X: d.X, Y: d.Y, Width: d.Width, Height: d.Height}
+		}
+	}
+	log.Printf("backend %s: display geometry: display %d not found; using stream size at origin (0,0)", b.Name(), displayID)
+	return input.Geometry{}
 }
 
 // publishStream fans backend chunks out to all subscribers.
@@ -88,8 +120,8 @@ func publishStream(ctx context.Context, ss *streamState) {
 		stateMu.Unlock()
 	}()
 	fr := &framer{}
-	publish := func(au []byte) {
-		frame := encodeFrame(boolToByte(keyframe(au)), uint64(time.Since(ss.streamStart).Milliseconds()), au)
+	publish := func(au []byte, key bool) {
+		frame := encodeFrame(boolToByte(key), uint64(time.Since(ss.streamStart).Milliseconds()), au)
 		ss.subMu.Lock()
 		defer ss.subMu.Unlock()
 		if ss.subscribers == nil {
@@ -98,6 +130,12 @@ func publishStream(ctx context.Context, ss *streamState) {
 		for sub := range ss.subscribers {
 			if sub.video == nil {
 				continue
+			}
+			if sub.needKey {
+				if !key {
+					continue
+				}
+				sub.needKey = false
 			}
 			sub.video.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
 			if err := writeFrame(sub.video, frame); err != nil {
@@ -110,18 +148,22 @@ func publishStream(ctx context.Context, ss *streamState) {
 		if ctx.Err() != nil {
 			return
 		}
+		if chunk.AccessUnit {
+			publish(chunk.Data, chunk.Keyframe)
+			continue
+		}
 		for _, au := range fr.Push(chunk.Data) {
 			if ctx.Err() != nil {
 				return
 			}
-			publish(au)
+			publish(au, keyframe(au))
 		}
 	}
 	for _, au := range fr.Flush() {
 		if ctx.Err() != nil {
 			return
 		}
-		publish(au)
+		publish(au, keyframe(au))
 	}
 }
 
@@ -151,6 +193,9 @@ func teardown() {
 		return
 	}
 	ss := state
+	if ss.input != nil {
+		ss.input.Close()
+	}
 	log.Printf("teardown: stopping stream")
 
 	ss.subMu.Lock()

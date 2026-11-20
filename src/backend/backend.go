@@ -35,6 +35,15 @@ type StartRequest struct {
 type H264Chunk struct {
 	Data     []byte
 	Keyframe bool
+	// AccessUnit is set when Data is exactly one access unit, so it can skip
+	// the framer.
+	AccessUnit bool
+}
+
+// KeyframeRequester is implemented by streams that can produce an IDR on
+// demand, e.g. for a late joiner.
+type KeyframeRequester interface {
+	RequestKeyframe()
 }
 
 // Stream is a live video stream from a backend.
