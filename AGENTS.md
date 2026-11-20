@@ -177,7 +177,7 @@ activeBackend (chosen via --backend at startup):
 6. Agent responds to caller with `{"type":"started","width":...,"height":...,"codec":"h264"}`
 
 ### Stop sequence
-1. Any client sends `{"type":"stop"}` → cancel publish context → close captured's stdin, which makes it stop and exit (killed after 2 s)
+1. A non-owner's `{"type":"stop"}` only detaches that viewer; the owner's held input and injector remain active. An owner stop cancels the publish context, releases held input, and closes captured's stdin, which makes it stop and exit (killed after 2 s)
 2. Send `{"type":"stream-ended"}` to all subscribers → close all sessions
 3. Set `state = nil`
 

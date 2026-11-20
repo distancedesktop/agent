@@ -17,21 +17,22 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	"distancedesktop/agent/src/backend"
+	"distancedesktop/agent/src/input"
 )
 
-type fakeBackend struct {
+type stopBackend struct {
 	mu      sync.Mutex
-	streams []*fakeStream
+	streams []*stopStream
 }
 
-func (b *fakeBackend) Name() string { return "fake" }
+func (b *stopBackend) Name() string { return "fake" }
 
-func (b *fakeBackend) ListDisplays(context.Context) ([]backend.Display, error) {
+func (b *stopBackend) ListDisplays(context.Context) ([]backend.Display, error) {
 	return []backend.Display{{ID: 0, Width: 64, Height: 64, RefreshRate: 60}}, nil
 }
 
-func (b *fakeBackend) StartStream(context.Context, backend.StartRequest) (backend.Stream, error) {
-	s := &fakeStream{chunks: make(chan backend.H264Chunk), done: make(chan struct{})}
+func (b *stopBackend) StartStream(context.Context, backend.StartRequest) (backend.Stream, error) {
+	s := &stopStream{chunks: make(chan backend.H264Chunk), done: make(chan struct{}), keyframes: make(chan struct{}, 1)}
 	go s.run()
 	b.mu.Lock()
 	b.streams = append(b.streams, s)
@@ -39,19 +40,20 @@ func (b *fakeBackend) StartStream(context.Context, backend.StartRequest) (backen
 	return s, nil
 }
 
-func (b *fakeBackend) started() int {
+func (b *stopBackend) started() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.streams)
 }
 
-type fakeStream struct {
+type stopStream struct {
 	chunks    chan backend.H264Chunk
 	done      chan struct{}
 	closeOnce sync.Once
+	keyframes chan struct{}
 }
 
-func (s *fakeStream) run() {
+func (s *stopStream) run() {
 	defer close(s.chunks)
 	key := []byte{0, 0, 0, 1, 0x67, 0x42, 0x00, 0, 0, 1, 0x68, 0xce, 0x06, 0, 0, 0, 1, 0x65, 0x88, 0x11}
 	slice := []byte{0, 0, 1, 0x41, 0x9a, 0x22}
@@ -62,6 +64,8 @@ func (s *fakeStream) run() {
 		select {
 		case s.chunks <- backend.H264Chunk{Data: next}:
 			next = slice
+		case <-s.keyframes:
+			next = key
 		case <-s.done:
 			return
 		}
@@ -73,17 +77,23 @@ func (s *fakeStream) run() {
 	}
 }
 
-func (s *fakeStream) Chunks() <-chan backend.H264Chunk { return s.chunks }
-func (s *fakeStream) Width() int                       { return 64 }
-func (s *fakeStream) Height() int                      { return 64 }
-func (s *fakeStream) FPS() int                         { return 60 }
-func (s *fakeStream) Codec() string                    { return "h264" }
-func (s *fakeStream) Close() error {
+func (s *stopStream) Chunks() <-chan backend.H264Chunk { return s.chunks }
+func (s *stopStream) RequestKeyframe() {
+	select {
+	case s.keyframes <- struct{}{}:
+	default:
+	}
+}
+func (s *stopStream) Width() int    { return 64 }
+func (s *stopStream) Height() int   { return 64 }
+func (s *stopStream) FPS() int      { return 60 }
+func (s *stopStream) Codec() string { return "h264" }
+func (s *stopStream) Close() error {
 	s.closeOnce.Do(func() { close(s.done) })
 	return nil
 }
 
-func (s *fakeStream) closed() bool {
+func (s *stopStream) closed() bool {
 	select {
 	case <-s.done:
 		return true
@@ -92,11 +102,11 @@ func (s *fakeStream) closed() bool {
 	}
 }
 
-// startTestAgent serves handleSession on a loopback WebTransport server backed
+// startStopTestAgent serves handleSession on a loopback WebTransport server backed
 // by a fake backend and returns the /wt URL.
-func startTestAgent(t *testing.T) (string, *fakeBackend) {
+func startStopTestAgent(t *testing.T) (string, *stopBackend) {
 	t.Helper()
-	fb := &fakeBackend{}
+	fb := &stopBackend{}
 	prev := activeBackend
 	activeBackend = fb
 	cm, err := newCertManager(t.TempDir())
@@ -269,7 +279,7 @@ func streamActive() bool {
 }
 
 func TestNonOwnerStopOnlyDetachesThatViewer(t *testing.T) {
-	url, fb := startTestAgent(t)
+	url, fb := startStopTestAgent(t)
 	owner := dialViewer(t, url)
 	owner.start()
 	viewer := dialViewer(t, url)
@@ -298,7 +308,7 @@ func TestNonOwnerStopOnlyDetachesThatViewer(t *testing.T) {
 }
 
 func TestOwnerStopEndsStreamForEveryone(t *testing.T) {
-	url, fb := startTestAgent(t)
+	url, fb := startStopTestAgent(t)
 	owner := dialViewer(t, url)
 	owner.start()
 	viewer := dialViewer(t, url)
@@ -314,5 +324,84 @@ func TestOwnerStopEndsStreamForEveryone(t *testing.T) {
 	}
 	if !fb.streams[0].closed() {
 		t.Fatal("backend stream not closed after owner stop")
+	}
+}
+
+type heldInputRecorder struct {
+	mu                        sync.Mutex
+	presses, releases, closes int
+}
+
+func (*heldInputRecorder) Mouse(int, int) error         { return nil }
+func (*heldInputRecorder) Move(int, int) error          { return nil }
+func (*heldInputRecorder) Button(int, bool) error       { return nil }
+func (*heldInputRecorder) Wheel(float64, float64) error { return nil }
+func (i *heldInputRecorder) Key(_ string, down bool) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if down {
+		i.presses++
+	} else {
+		i.releases++
+	}
+	return nil
+}
+func (i *heldInputRecorder) Close() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.closes++
+	return nil
+}
+func (i *heldInputRecorder) counts() (int, int, int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.presses, i.releases, i.closes
+}
+
+func TestNonOwnerStopPreservesOwnersHeldInput(t *testing.T) {
+	recorder := &heldInputRecorder{}
+	previous := newInjector
+	newInjector = func() (input.Injector, error) { return recorder, nil }
+	t.Cleanup(func() { newInjector = previous })
+	url, _ := startStopTestAgent(t)
+	owner := dialViewer(t, url)
+	owner.start()
+	viewer := dialViewer(t, url)
+	viewer.start()
+	if err := json.NewEncoder(owner.ctrl).Encode(map[string]any{
+		"type": "input", "kind": "key", "code": "KeyA", "down": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		presses, _, _ := recorder.counts()
+		if presses == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("owner key press not injected")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stateMu.Lock()
+	controller := state.input
+	stateMu.Unlock()
+	viewer.send("stop")
+	viewer.expect("stopped")
+	viewer.expectVideoEnd()
+	stateMu.Lock()
+	preserved := state != nil && state.input == controller
+	stateMu.Unlock()
+	if !preserved {
+		t.Fatal("non-owner stop replaced the owner's injector")
+	}
+	if _, releases, closes := recorder.counts(); releases != 0 || closes != 0 {
+		t.Fatalf("non-owner stop released input: releases=%d closes=%d", releases, closes)
+	}
+	owner.send("stop")
+	owner.expect("stopped")
+	if _, releases, closes := recorder.counts(); releases != 1 || closes != 1 {
+		t.Fatalf("owner stop did not release input: releases=%d closes=%d", releases, closes)
 	}
 }
