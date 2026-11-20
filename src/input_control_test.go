@@ -67,7 +67,7 @@ func TestInputErrorChanges(t *testing.T) {
 	}{
 		{"", false}, {"unavailable", true}, {"unavailable", false},
 		{"disabled", true}, {"disabled", false}, {"", false},
-		{"disabled", true},
+		{"disabled", false}, {"unavailable", true},
 	} {
 		var err error
 		if tc.message != "" {

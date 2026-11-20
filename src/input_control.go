@@ -11,10 +11,10 @@ var inputEnabled = true
 var newInjector = input.New
 
 func (sub *subscriber) reportInputError(err error) bool {
-	message := ""
-	if err != nil {
-		message = err.Error()
+	if err == nil {
+		return false
 	}
+	message := err.Error()
 	changed := message != sub.lastInputError
 	sub.lastInputError = message
 	return changed && message != ""
