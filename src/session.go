@@ -113,8 +113,7 @@ func handleSession(wtSess *webtransport.Session, cm *certManager) {
 
 		switch req.Type {
 		case "input":
-			if err := injectInput(sub, req.Event); err != nil && !sub.inputError {
-				sub.inputError = true
+			if err := injectInput(sub, req.Event); sub.reportInputError(err) {
 				sendControlMsg(sub, map[string]string{"type": "error", "message": err.Error()})
 			}
 		case "list-displays":

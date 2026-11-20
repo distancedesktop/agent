@@ -10,6 +10,16 @@ import (
 var inputEnabled = true
 var newInjector = input.New
 
+func (sub *subscriber) reportInputError(err error) bool {
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	changed := message != sub.lastInputError
+	sub.lastInputError = message
+	return changed && message != ""
+}
+
 func injectInput(sub *subscriber, event input.Event) error {
 	stateMu.Lock()
 	defer stateMu.Unlock()

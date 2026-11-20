@@ -30,8 +30,8 @@ type subscriber struct {
 	video  *webtransport.SendStream
 	// needKey holds back frames from a late joiner until the next keyframe.
 	// Guarded by streamState.subMu.
-	needKey    bool
-	inputError bool
+	needKey        bool
+	lastInputError string
 }
 
 // streamState tracks the one active video stream.

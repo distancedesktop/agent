@@ -58,3 +58,23 @@ func TestInputOwnership(t *testing.T) {
 		t.Fatal("disabled input initialized")
 	}
 }
+
+func TestInputErrorChanges(t *testing.T) {
+	sub := &subscriber{}
+	for _, tc := range []struct {
+		message string
+		want    bool
+	}{
+		{"", false}, {"unavailable", true}, {"unavailable", false},
+		{"disabled", true}, {"disabled", false}, {"", false},
+		{"disabled", true},
+	} {
+		var err error
+		if tc.message != "" {
+			err = fmt.Errorf("%s", tc.message)
+		}
+		if got := sub.reportInputError(err); got != tc.want {
+			t.Errorf("%q: report=%v want=%v", tc.message, got, tc.want)
+		}
+	}
+}
