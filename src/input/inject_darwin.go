@@ -5,6 +5,7 @@ package input
 import (
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -20,9 +21,14 @@ var post func(uint32, unsafe.Pointer)
 var release func(unsafe.Pointer)
 var scroll func(unsafe.Pointer, uint32, uint32, int32, int32, int32) unsafe.Pointer
 var trusted func() bool
+var setIntegerValue func(unsafe.Pointer, uint32, int64)
 
 type point struct{ X, Y float64 }
-type native struct{ buttons [5]bool }
+type native struct {
+	buttons     [5]bool
+	clicks      clickTracker
+	clickCounts [5]int64
+}
 
 func New() (Injector, error) {
 	macOnce.Do(func() {
@@ -39,6 +45,7 @@ func New() (Injector, error) {
 		purego.RegisterLibFunc(&release, h, "CFRelease")
 		purego.RegisterLibFunc(&scroll, h, "CGEventCreateScrollWheelEvent2")
 		purego.RegisterLibFunc(&trusted, h, "AXIsProcessTrusted")
+		purego.RegisterLibFunc(&setIntegerValue, h, "CGEventSetIntegerValueField")
 	})
 	if macErr != nil {
 		return nil, macErr
@@ -91,8 +98,20 @@ func (n *native) Button(b int, down bool) error {
 	if !down {
 		kind++
 	}
+	e := createMouse(nil, kind, p, cb)
+	if e == nil {
+		return fmt.Errorf("CGEvent creation failed")
+	}
+	if down {
+		n.clickCounts[b] = n.clicks.press(b, p.X, p.Y, time.Now())
+	}
+	count := n.clickCounts[b]
+	if count == 0 {
+		count = 1
+	}
+	setIntegerValue(e, 1, count) // kCGMouseEventClickState
 	n.buttons[b] = down
-	return emit(createMouse(nil, kind, p, cb))
+	return emit(e)
 }
 func (*native) Wheel(x, y float64) error { return emit(scroll(nil, 0, 2, int32(-y), int32(-x), 0)) }
 func (*native) Key(code string, down bool) error {
