@@ -265,7 +265,9 @@ func main() {
 			Addr:      *addr,
 			TLSConfig: tlsConfig,
 			QUICConfig: &quic.Config{
-				EnableDatagrams: true,
+				// Fit Initial packets inside 1280-byte tunnel MTUs, including IP/UDP headers.
+				InitialPacketSize: 1200,
+				EnableDatagrams:   true,
 			},
 		},
 	}
