@@ -63,6 +63,9 @@ Input events are not logged. Enable/disable host injection with `--input on|off`
 Linux needs an authorized `DISPLAY`, libX11 and libXtst (XTEST); macOS needs
 Accessibility permission. Held keys/buttons are released when the stream ends.
 
+Windows relative pointer movement uses `MOUSEEVENTF_MOVE`, so host pointer
+acceleration/settings apply; movement is not raw, unaccelerated input.
+
 ```json
 {"type":"input","kind":"mouse","dx":10,"dy":-5,"buttons":0}
 {"type":"input","kind":"mousedown","button":0}

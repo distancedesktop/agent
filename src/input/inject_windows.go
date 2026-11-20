@@ -79,19 +79,13 @@ func (*native) Wheel(x, y float64) error {
 	return nil
 }
 func (*native) Key(code string, down bool) error {
-	scan, ok := scanCodes[code]
-	if !ok {
-		return fmt.Errorf("unsupported Windows key %q", code)
-	}
-	flags := uint32(8)
-	if scan&0x100 != 0 {
-		flags |= 1
-	}
-	if !down {
-		flags |= 2
+	vk, scan, flags, err := windowsKeyFields(code, down)
+	if err != nil {
+		return err
 	}
 	return winSend(1, func(b []byte) {
-		binary.LittleEndian.PutUint16(b[2:], scan&255)
+		binary.LittleEndian.PutUint16(b, vk)
+		binary.LittleEndian.PutUint16(b[2:], scan)
 		binary.LittleEndian.PutUint32(b[4:], flags)
 	})
 }
