@@ -84,7 +84,7 @@ ace:
 		}
 		name := sid.String()
 		if account, domain, _, err := sid.LookupAccount(""); err == nil {
-			name = strings.TrimPrefix(domain+``+account, ``)
+			name = strings.TrimPrefix(domain+`\`+account, `\`)
 		}
 		return fmt.Errorf("token file %s is readable by %s; run: %s /remove:g *%s", path, name, fix, sid)
 	}
