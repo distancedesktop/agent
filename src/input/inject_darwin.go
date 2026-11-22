@@ -23,6 +23,8 @@ var scroll func(unsafe.Pointer, uint32, uint32, int32, int32, int32) unsafe.Poin
 var trusted func() bool
 var setIntegerValue func(unsafe.Pointer, uint32, int64)
 var setFlags func(unsafe.Pointer, uint64)
+var activeDisplays func(uint32, *uint32, *uint32) int32
+var displayBounds func(uint32) rect
 
 type point struct{ X, Y float64 }
 type native struct {
@@ -50,6 +52,8 @@ func New() (Injector, error) {
 		purego.RegisterLibFunc(&trusted, h, "AXIsProcessTrusted")
 		purego.RegisterLibFunc(&setIntegerValue, h, "CGEventSetIntegerValueField")
 		purego.RegisterLibFunc(&setFlags, h, "CGEventSetFlags")
+		purego.RegisterLibFunc(&activeDisplays, h, "CGGetActiveDisplayList")
+		purego.RegisterLibFunc(&displayBounds, h, "CGDisplayBounds")
 	})
 	if macErr != nil {
 		return nil, macErr
@@ -76,7 +80,23 @@ func location() point {
 	defer release(e)
 	return getLocation(e)
 }
-func (n *native) Mouse(x, y int) error { p := location(); return n.Move(int(p.X)+x, int(p.Y)+y) }
+func displayRects() []rect {
+	var ids [16]uint32
+	var count uint32
+	if activeDisplays(uint32(len(ids)), &ids[0], &count) != 0 {
+		return nil
+	}
+	rects := make([]rect, 0, count)
+	for _, id := range ids[:min(int(count), len(ids))] {
+		rects = append(rects, displayBounds(id))
+	}
+	return rects
+}
+func (n *native) Mouse(x, y int) error {
+	p := location()
+	cx, cy := clampToRects(float64(int(p.X)+x), float64(int(p.Y)+y), displayRects())
+	return n.Move(int(cx), int(cy))
+}
 func (n *native) Move(x, y int) error {
 	kind, b := uint32(5), uint32(0)
 	if n.buttons[0] {
