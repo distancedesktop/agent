@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -56,12 +57,9 @@ func checkTokenFile(path string) error {
 		return err
 	}
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.OWNER_SECURITY_INFORMATION)
+		windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
-	}
-	if owner, _, err := sd.Owner(); err == nil && owner != nil {
-		sids = append(sids, owner)
 	}
 	fix := fmt.Sprintf(`icacls "%s" /inheritance:r /grant:r "%%USERNAME%%:F"`, path)
 	dacl, _, err := sd.DACL()
@@ -86,9 +84,9 @@ ace:
 		}
 		name := sid.String()
 		if account, domain, _, err := sid.LookupAccount(""); err == nil {
-			name = domain + `\` + account
+			name = strings.TrimPrefix(domain+``+account, ``)
 		}
-		return fmt.Errorf("token file %s is readable by %s; run: %s", path, name, fix)
+		return fmt.Errorf("token file %s is readable by %s; run: %s /remove:g *%s", path, name, fix, sid)
 	}
 	return nil
 }
