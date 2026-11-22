@@ -63,8 +63,10 @@ Input events are not logged. Enable/disable host injection with `--input on|off`
 Linux needs an authorized `DISPLAY`, libX11 and libXtst (XTEST); macOS needs
 Accessibility permission. Held keys/buttons are released when the stream ends.
 
-Windows relative pointer movement uses `MOUSEEVENTF_MOVE`, so host pointer
-acceleration/settings apply; movement is not raw, unaccelerated input.
+Windows relative pointer movement is sent as an absolute `SendInput` move from
+the current cursor position, so it is pixel-exact and host pointer speed and
+acceleration do not apply. Programs that read raw relative mouse input (some
+games) see absolute moves.
 
 macOS applies held Shift/Control/Option/Command flags to keyboard and pointer
 events, with a session-local CapsLock toggle. Unsupported macOS codes currently
@@ -92,9 +94,9 @@ Every `/wt` upgrade must carry the agent's viewer token, or it is refused with
 401 before any session exists. Browsers cannot set headers on a WebTransport
 CONNECT, so viewers send it as a query parameter (`/wt?token=<token>`);
 non-browser clients may send `Authorization: Bearer <token>` instead. The token
-is generated on first run into `<config dir>/viewer-token` (mode 0600, override
-with `--token-file`) and shown with `--print-token`. Rotate it by replacing the
-file and restarting. Origin checks and cert pinning do not authenticate viewers;
+is generated on first run into `<config dir>/viewer-token` (mode 0600; on Windows an ACL for the
+current user, SYSTEM and Administrators only; override with `--token-file`) and shown with `--print-token`. Rotate it by replacing the
+file and restarting. A token file other users can read is refused at startup. Origin checks and cert pinning do not authenticate viewers;
 this token does.
 
 ### Origin checks

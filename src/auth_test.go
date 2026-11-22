@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -224,7 +225,7 @@ func TestLoadOrCreateToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("token file mode %v, want 0600", fi.Mode().Perm())
 	}
 	again, err := loadOrCreateToken(path)
@@ -238,10 +239,16 @@ func TestLoadOrCreateToken(t *testing.T) {
 		t.Fatal("accepted a too-short token")
 	}
 
-	if runtime.GOOS != "windows" {
+	{
 		loose := filepath.Join(t.TempDir(), "loose")
 		os.WriteFile(loose, []byte("0123456789abcdef0123\n"), 0o644)
 		os.Chmod(loose, 0o644)
+		if runtime.GOOS == "windows" {
+			// Mode bits do nothing here; grant Everyone read through the ACL.
+			if out, err := exec.Command("icacls", loose, "/grant", "*S-1-1-0:R").CombinedOutput(); err != nil {
+				t.Fatalf("icacls: %v: %s", err, out)
+			}
+		}
 		if _, err := loadOrCreateToken(loose); err == nil {
 			t.Fatal("accepted a group/world-readable token file")
 		}

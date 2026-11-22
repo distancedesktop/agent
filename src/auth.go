@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -17,7 +16,8 @@ import (
 const minTokenLen = 16
 
 // loadOrCreateToken returns the viewer token stored at path, generating and
-// saving a random one (mode 0600) when the file does not exist yet.
+// saving a random one (mode 0600, or an owner-only ACL on Windows) when the file
+// does not exist yet.
 func loadOrCreateToken(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err == nil {
@@ -25,14 +25,8 @@ func loadOrCreateToken(path string) (string, error) {
 		if len(tok) < minTokenLen {
 			return "", fmt.Errorf("token file %s: token must be at least %d characters", path, minTokenLen)
 		}
-		if runtime.GOOS != "windows" {
-			fi, err := os.Stat(path)
-			if err != nil {
-				return "", err
-			}
-			if fi.Mode().Perm()&0o077 != 0 {
-				return "", fmt.Errorf("token file %s: mode %04o is readable by other users; chmod 600 it", path, fi.Mode().Perm())
-			}
+		if err := checkTokenFile(path); err != nil {
+			return "", err
 		}
 		return tok, nil
 	}
@@ -49,6 +43,11 @@ func loadOrCreateToken(path string) (string, error) {
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
+		return "", err
+	}
+	if err := restrictTokenFile(path); err != nil {
+		f.Close()
+		os.Remove(path)
 		return "", err
 	}
 	if _, err := f.WriteString(tok + "\n"); err != nil {
