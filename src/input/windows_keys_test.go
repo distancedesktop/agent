@@ -48,3 +48,14 @@ func TestWindowsKeyCoverage(t *testing.T) {
 		t.Fatal("accepted empty key")
 	}
 }
+
+func TestWindowsAbsoluteRoundTrip(t *testing.T) {
+	for _, size := range []int{2, 800, 1200, 1600, 1920, 3840, 7680, 16384} {
+		for v := -1; v <= size; v++ {
+			want := min(max(v, 0), size-1)
+			if got := windowsAbsolute(v, size) * (size - 1) / 65535; got != want {
+				t.Fatalf("size %d pixel %d lands on %d", size, v, got)
+			}
+		}
+	}
+}

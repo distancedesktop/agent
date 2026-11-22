@@ -12,12 +12,22 @@ import (
 var user32 = syscall.NewLazyDLL("user32.dll")
 var sendInput = user32.NewProc("SendInput")
 var getMetric = user32.NewProc("GetSystemMetrics")
+var getCursorPos = user32.NewProc("GetCursorPos")
+var setDPIContext = user32.NewProc("SetProcessDpiAwarenessContext")
+var setDPIAware = user32.NewProc("SetProcessDPIAware")
 
 type native struct{ wheel wheelAccumulator }
 
 func New() (Injector, error) {
 	if err := sendInput.Find(); err != nil {
 		return nil, err
+	}
+	// Cursor and desktop coordinates must be physical pixels, like the captured
+	// geometry; a DPI-unaware process gets them scaled on a scaled display.
+	if setDPIContext.Find() != nil {
+		setDPIAware.Call()
+	} else if ok, _, _ := setDPIContext.Call(^uintptr(3)); ok == 0 { // PER_MONITOR_AWARE_V2
+		setDPIAware.Call()
 	}
 	return &native{}, nil
 }
@@ -43,14 +53,23 @@ func winMouse(x, y int, data, flags uint32) error {
 		binary.LittleEndian.PutUint32(b[12:], flags)
 	})
 }
-func (*native) Mouse(x, y int) error { return winMouse(x, y, 0, 1) }
+// Mouse moves the pointer by exactly (dx, dy) pixels. A relative SendInput move
+// goes through the host pointer speed and acceleration settings, so the move is
+// sent as an absolute one from the current position instead.
+func (n *native) Mouse(dx, dy int) error {
+	var p struct{ X, Y int32 }
+	if ok, _, _ := getCursorPos.Call(uintptr(unsafe.Pointer(&p))); ok == 0 {
+		return winMouse(dx, dy, 0, 1)
+	}
+	return n.Move(int(p.X)+dx, int(p.Y)+dy)
+}
 func metric(id uintptr) int          { v, _, _ := getMetric.Call(id); return int(int32(v)) }
 func (*native) Move(x, y int) error {
 	w, h := metric(78), metric(79)
 	if w < 2 || h < 2 {
 		return fmt.Errorf("desktop geometry unavailable")
 	}
-	return winMouse((x-metric(76))*65535/(w-1), (y-metric(77))*65535/(h-1), 0, 0xc001)
+	return winMouse(windowsAbsolute(x-metric(76), w), windowsAbsolute(y-metric(77), h), 0, 0xc001)
 }
 func (*native) Button(b int, down bool) error {
 	if b < 0 || b > 4 {

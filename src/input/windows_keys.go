@@ -29,3 +29,11 @@ func windowsKeyFields(code string, down bool) (vk, scan uint16, flags uint32, er
 	}
 	return 0, scan & 255, flags, nil
 }
+
+// windowsAbsolute converts pixel v on a virtual desktop axis of size pixels to
+// the 0..65535 coordinate MOUSEEVENTF_ABSOLUTE takes. Windows maps it back with
+// a truncating v*(size-1)/65535, so round up or the pointer lands a pixel short.
+func windowsAbsolute(v, size int) int {
+	v = min(max(v, 0), size-1)
+	return (v*65535 + size - 2) / (size - 1)
+}
